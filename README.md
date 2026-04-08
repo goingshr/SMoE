@@ -46,7 +46,7 @@ python main.py \
     --dataset_path wic \
     --input_num    20 \
     --output_len   100 \
-    --cpu_cores    16 \
+    --cpu_cores    3 \
     --GPU_mem      24
 ```
 
@@ -119,7 +119,7 @@ All `run.sh` arguments are controlled via environment variables (same names, upp
 | `BATCH_SIZE` | `1` | Same as `--batch_size` |
 | `OUTPUT_LEN` | `100` | Same as `--output_len` |
 | `GPU_MEM` | `45` | Same as `--GPU_mem` |
-| `CPU_CORES` | `16` | Same as `--cpu_cores` |
+| `CPU_CORES` | `3` | Same as `--cpu_cores` |
 | `LOG_LEVEL` | `INFO` | Logging level: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
 | `LOG_DIR` | `./logs` | Directory for log files |
 | `CONDA_ENV` | `Nmoe` | Conda environment to activate |
