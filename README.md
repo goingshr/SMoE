@@ -9,7 +9,7 @@ Supports three models: **DeepSeek-MoE**, **Qwen2-MoE**, **Xverse-MoE**.
 ## Requirements
 
 ```bash
-conda activate SMoE
+conda activate SMoE #python3.13 nogil version
 pip install -r requirements.txt
 ```
 ---
