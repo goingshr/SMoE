@@ -1,15 +1,3 @@
-# SMoEaligned — Python package requirements
-# Tested with Python 3.13.2 (cp313t free-threading build) in conda env "Nmoe"
-#
-# Quick install:
-#   conda create -n Nmoe python=3.13 -c conda-forge
-#   conda activate Nmoe
-#   pip install -r requirements.txt
-#
-# For CUDA support (recommended), install PyTorch with your CUDA version first:
-#   pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu121
-# Then run:
-#   pip install -r requirements.txt --ignore-installed torch
 
 # ── Core deep learning ────────────────────────────────────────────────────────
 torch==2.7.1
