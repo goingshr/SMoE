@@ -9,7 +9,7 @@ Supports three models: **DeepSeek-MoE**, **Qwen2-MoE**, **Xverse-MoE**.
 ## Requirements
 
 ```bash
-conda create -n SMoE python=3.13 python-freethreading -c conda-forge
+conda create -n SMoE python=3.13 python-freethreading -c conda-forge #nogil python
 conda activate SMoE
 pip install -r requirements.txt
 ```
