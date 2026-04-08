@@ -12,9 +12,6 @@ Supports three models: **DeepSeek-MoE**, **Qwen2-MoE**, **Xverse-MoE**.
 conda activate SMoE
 pip install -r requirements.txt
 ```
-
-> **Key dependencies:** `datasets>=2.0.0` (auto-download benchmark datasets on first run), `huggingface-hub==0.32.4` (auto-download model weights)
-
 ---
 
 ## Quick Start
