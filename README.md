@@ -63,7 +63,7 @@ python main.py \
 | `--input_num` | `20` | Number of prompts to run |
 | `--batch_size` | `1` | Batch size per forward pass |
 | `--output_len` | `100` | Max new tokens to generate per prompt |
-| `--GPU_mem` | `24` | GPU memory in GB, used to compute expert cache offload size |
+| `--GPU_mem` | `45` | GPU memory in GB, used to compute expert cache offload size |
 | `--cpu_cores` | `3` | Number of CPU cores allocated to inference (n-1 for compute, 1 for loading/bg worker) |
 | `--debug` | `False` | Enable debugpy remote debugger on port 9501 |
 
@@ -118,7 +118,7 @@ All `run.sh` arguments are controlled via environment variables (same names, upp
 | `INPUT_NUM` | `20` | Same as `--input_num` |
 | `BATCH_SIZE` | `1` | Same as `--batch_size` |
 | `OUTPUT_LEN` | `100` | Same as `--output_len` |
-| `GPU_MEM` | `24` | Same as `--GPU_mem` |
+| `GPU_MEM` | `45` | Same as `--GPU_mem` |
 | `CPU_CORES` | `16` | Same as `--cpu_cores` |
 | `LOG_LEVEL` | `INFO` | Logging level: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
 | `LOG_DIR` | `./logs` | Directory for log files |
