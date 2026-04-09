@@ -40,7 +40,7 @@ TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="${LOG_DIR}/${MODEL_NAME}_${TIMESTAMP}.log"
 
 # ── Conda environment ──────────────────────────────────────────────────────────
-CONDA_ENV="${CONDA_ENV:-Nmoe}"
+CONDA_ENV="${CONDA_ENV:-SMoE}"
 # Skip activation if already in the correct environment
 if [[ "$(conda info --envs 2>/dev/null | grep '*' | awk '{print $1}')" != "${CONDA_ENV}" ]]; then
     echo "[run.sh] Activating conda env: ${CONDA_ENV}"

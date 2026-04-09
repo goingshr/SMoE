@@ -22,16 +22,19 @@ pip install -r requirements.txt
 # Qwen2-MoE
 MODEL_NAME=qwenmoe \
 MODEL_PATH=parameters/qwenmoe \
+CONFIG_PATH=configs/qwen2moe_config.json \
 bash run.sh
 
 # DeepSeek-MoE
 MODEL_NAME=deepseekmoe \
 MODEL_PATH=parameters/deepseekmoe \
+CONFIG_PATH=configs/deepseekmoe_config.json \
 bash run.sh
 
 # Xverse-MoE
 MODEL_NAME=xversemoe \
 MODEL_PATH=parameters/xversemoe \
+CONFIG_PATH=configs/xversemoe_config.json \
 bash run.sh
 ```
 
