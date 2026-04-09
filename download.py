@@ -1,17 +1,3 @@
-"""
-download.py — Download model weights and datasets to local storage.
-
-Run as a standalone script:
-    python download.py --models all
-    python download.py --models qwenmoe deepseekmoe
-    python download.py --datasets all
-    python download.py --datasets wic gsm8k
-    python download.py --all
-
-Or import from main.py:
-    from download import ensure_model, ensure_dataset
-"""
-
 import argparse
 import os
 import json

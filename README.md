@@ -2,14 +2,15 @@
 
 SMoE inference acceleration framework with GPU/CPU expert caching for Mixture-of-Experts LLMs. SMoE leverages expert importance to guide decisions, substituting low-importance active experts with functionally similar ones already cached in GPU memory, thereby preserving accuracy. 
 
-Supports three models: **DeepSeek-MoE**, **Qwen2-MoE**, **Xverse-MoE**.
+Supports three models: **deepseek-ai/deepseek-moe-16b-chat**, **Qwen/Qwen2-57B-A14B-Instruct**, **xverse/XVERSE-MoE-A4.2B**.
 
 ---
 
 ## Requirements
 
 ```bash
-conda activate SMoE #python3.13 nogil version
+conda create -n SMoE python=3.13 python-freethreading -c conda-forge #nogil python
+conda activate SMoE
 pip install -r requirements.txt
 ```
 ---
@@ -48,7 +49,7 @@ python main.py \
     --dataset_path wic \
     --input_num    20 \
     --output_len   100 \
-    --cpu_cores    16 \
+    --cpu_cores    3 \
     --GPU_mem      24
 ```
 
@@ -65,7 +66,7 @@ python main.py \
 | `--input_num` | `20` | Number of prompts to run |
 | `--batch_size` | `1` | Batch size per forward pass |
 | `--output_len` | `100` | Max new tokens to generate per prompt |
-| `--GPU_mem` | `24` | GPU memory in GB, used to compute expert cache offload size |
+| `--GPU_mem` | `45` | GPU memory in GB, used to compute expert cache offload size |
 | `--cpu_cores` | `3` | Number of CPU cores allocated to inference (n-1 for compute, 1 for loading/bg worker) |
 | `--debug` | `False` | Enable debugpy remote debugger on port 9501 |
 
@@ -120,8 +121,8 @@ All `run.sh` arguments are controlled via environment variables (same names, upp
 | `INPUT_NUM` | `20` | Same as `--input_num` |
 | `BATCH_SIZE` | `1` | Same as `--batch_size` |
 | `OUTPUT_LEN` | `100` | Same as `--output_len` |
-| `GPU_MEM` | `24` | Same as `--GPU_mem` |
-| `CPU_CORES` | `16` | Same as `--cpu_cores` |
+| `GPU_MEM` | `45` | Same as `--GPU_mem` |
+| `CPU_CORES` | `3` | Same as `--cpu_cores` |
 | `LOG_LEVEL` | `INFO` | Logging level: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
 | `LOG_DIR` | `./logs` | Directory for log files |
 | `CONDA_ENV` | `Nmoe` | Conda environment to activate |

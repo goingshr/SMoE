@@ -1,18 +1,4 @@
-#!/usr/bin/env bash
-# =============================================================================
-# run.sh — SMoEaligned one-click inference script
-# Usage: bash run.sh
-#
-# Examples:
-#   # Qwen2-MoE (default)
-#   bash run.sh --model_name qwenmoe --model_path /path/to/qwen2_moe
-#
-#   # DeepSeek-MoE
-#   bash run.sh --model_name deepseekmoe --model_path /path/to/deepseekmoe
-#
-#   # Xverse-MoE
-#   bash run.sh --model_name xversemoe --model_path /path/to/xversemoe
-# =============================================================================
+
 set -euo pipefail
 
 # ── User-configurable parameters ──────────────────────────────────────────────
@@ -25,7 +11,7 @@ INPUT_NUM="${INPUT_NUM:-20}"                   # Number of inference samples
 BATCH_SIZE="${BATCH_SIZE:-1}"                  # Batch size
 OUTPUT_LEN="${OUTPUT_LEN:-100}"                # Max new tokens per prompt
 GPU_MEM="${GPU_MEM:-24}"                       # GPU memory in GB, affects cache_size
-CPU_CORES="${CPU_CORES:-16}"                   # Number of CPU cores allocated to inference
+CPU_CORES="${CPU_CORES:-3}"                   # Number of CPU cores allocated to inference
 
 # ── Logging settings ───────────────────────────────────────────────────────────
 # LOG_LEVEL: DEBUG | INFO | WARNING | ERROR
