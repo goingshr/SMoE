@@ -9,10 +9,23 @@ Supports three models: **deepseek-ai/deepseek-moe-16b-chat**, **Qwen/Qwen2-57B-A
 ## Requirements
 
 ```bash
-conda create -n SMoE python=3.13 python-freethreading -c conda-forge #nogil python
+# 1. Create a Python 3.13 free-threading (no-GIL) environment
+conda create -n SMoE python=3.13 python-freethreading -c conda-forge
 conda activate SMoE
+
+# 2. Install Rust toolchain and build tokenizers from source (requires sudo)
+cd ./SMoE && sudo bash dependency.sh
+
+# 3. Install remaining Python dependencies
 pip install -r requirements.txt
 ```
+
+> **Why `dependency.sh`?**
+> The standard `tokenizers` wheel does not support Python 3.13's free-threading (no-GIL) build.
+> `dependency.sh` compiles and installs the `tokenizers` library directly from source using the local Rust toolchain, ensuring full compatibility.
+>
+> - **Root privileges** — `dependency.sh` must be run with `sudo`, as it installs system packages and manages the Rust toolchain via `snap`.
+> - **Ubuntu only** — `dependency.sh` relies on `apt` and `snap` for package management. Users on other Linux distributions can easily adapt the script with minor modifications.
 ---
 
 ## Quick Start

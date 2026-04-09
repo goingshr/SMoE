@@ -4,10 +4,9 @@ torch==2.7.1
 
 # ── HuggingFace ecosystem ─────────────────────────────────────────────────────
 transformers==4.50.3
-tokenizers==0.21.1
 huggingface-hub==0.32.4
 datasets>=2.0.0
-safetensors==0.5.3
+safetensors
 accelerate>=0.34.0
 datasets>=2.0.0          # required for auto-downloading benchmark datasets
 
