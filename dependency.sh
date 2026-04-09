@@ -42,8 +42,6 @@ sudo apt-get update -qq
 log_ok "Package index updated."
 
 # ── Step 2: Remove existing rustc/cargo (if any) ─────────────────────────────
-# 若系统中已通过 apt 安装了 rustc 或 cargo，先将其卸载。
-# 后续统一由 rustup 管理 Rust 工具链，避免版本冲突。
 log_section "Step 2/6 — Removing system-managed Rust (if present)"
 if dpkg -l rustc &>/dev/null || dpkg -l cargo &>/dev/null; then
     log_warn "Detected apt-installed rustc/cargo — removing to avoid version conflicts..."
@@ -54,7 +52,6 @@ else
 fi
 
 # ── Step 3: Install rustup via snap ──────────────────────────────────────────
-# rustup 将接管 rustc 和 cargo 的版本管理，确保使用最新稳定工具链。
 log_section "Step 3/6 — Installing rustup (snap)"
 if command -v rustup &>/dev/null; then
     log_info "rustup already installed, skipping snap install."
