@@ -14,7 +14,7 @@ conda create -n SMoE python=3.13 python-freethreading -c conda-forge
 conda activate SMoE
 
 # 2. Install Rust toolchain and build tokenizers from source (requires sudo)
-cd ./SMoE && sudo bash dependency.sh
+cd ./SMoE && bash dependency.sh
 
 # 3. Install remaining Python dependencies
 pip install -r requirements.txt
