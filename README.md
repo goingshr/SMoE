@@ -146,7 +146,7 @@ All `run.sh` arguments are controlled via environment variables (same names, upp
 
 We provide OpenCompass-based benchmark evaluation for DeepSeek MoE, Xverse MoE, and Qwen MoE models.
 
-Supported benchmarks: GaokaoBench, GSM8K, RACE, TriviaQA, WiC, BoolQ.
+Supported benchmarks: GaokaoBench, GSM8K, RACE, TriviaQA, WiC.
 
 See [`opencompass_test/README.md`](opencompass_test/README.md) for full setup and usage instructions.
 
