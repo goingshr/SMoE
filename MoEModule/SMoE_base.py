@@ -37,6 +37,13 @@ logger = logging.getLogger(__name__)
 
 ExpertUID = Tuple[int, int]
 
+# ---------------------------------------------------------------------------
+# Module-level CPU compute-time tracking (per generated token)
+# ---------------------------------------------------------------------------
+_cpu_ms_cur_token_idx: int = -1           # token index currently being accumulated
+_cpu_ms_cur_token_samples: List[float] = []    # compute_ms of each CPU expert this token
+cpu_compute_ms_per_token: List[float] = []     # average compute_ms flushed per token
+
 
 # ---------------------------------------------------------------------------
 # Persistent background worker thread
@@ -343,6 +350,16 @@ class AbstractMoELayer(nn.Module, ABC):
         # ── B4: drop stale prefetch queue ────────────────────────────────
         self.ExpertCache.clear_queue()
 
+        # ── Token boundary: flush CPU-ms accumulator ─────────────────────
+        global _cpu_ms_cur_token_idx, _cpu_ms_cur_token_samples, cpu_compute_ms_per_token
+        cur_tok = expertcache_module.tokens
+        if cur_tok != _cpu_ms_cur_token_idx:
+            if _cpu_ms_cur_token_samples:
+                cpu_compute_ms_per_token.append(
+                    sum(_cpu_ms_cur_token_samples) / len(_cpu_ms_cur_token_samples))
+            _cpu_ms_cur_token_samples = []
+            _cpu_ms_cur_token_idx = cur_tok
+
         # ── B5: classify experts → hit / PCIe-load / CPU-compute ────────
         hit_uids  = []
         uid_batch = {}
@@ -451,3 +468,7 @@ class AbstractMoELayer(nn.Module, ABC):
             self.CPUComputeTimeOneExpertOneBatch.append(elapsed)
             self.CPUComputeTimeOneExpertOneBatch = \
                 self.CPUComputeTimeOneExpertOneBatch[-10:]
+
+            # Accumulate compute_ms for per-token average
+            global _cpu_ms_cur_token_samples
+            _cpu_ms_cur_token_samples.append(compute_ms)

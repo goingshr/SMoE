@@ -163,7 +163,7 @@ all_inputs   = load_all(dataset_path, args.batch_size, args.input_num)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # cache_size = 300 for all models (as specified)
-cache_size = 300
+cache_size = 470 if args.model_name == 'qwenmoe' else 300
 
 _cfg_path = args.config_path if args.config_path else None
 model = build_model(
@@ -198,6 +198,7 @@ output_len = args.output_len
 # ── Inference loop ───────────────────────────────────────────────────────────
 
 import utils.expertcache as expertcache
+import MoEModule.SMoE_base as _smoe_base
 
 for i, _ in enumerate(all_inputs):
     # Reset per-prompt statistics (patcher reads these each token)
@@ -208,6 +209,9 @@ for i, _ in enumerate(all_inputs):
     expertcache.cache_total_per_token = 0
     expertcache.prefetch_loaded_by_layer = {}
     expertcache.prefetch_start_time      = {}
+    _smoe_base.cpu_compute_ms_per_token.clear()
+    _smoe_base._cpu_ms_cur_token_samples.clear()
+    _smoe_base._cpu_ms_cur_token_idx = -1
     texts  = all_inputs[i]
     print('=' * 20, flush=True)
     print(f"input_id: {i}")
@@ -222,6 +226,15 @@ for i, _ in enumerate(all_inputs):
         end     = time.time()
 
     # Patcher already logged per-token prefill/decode/hit-rate via logger.info.
+    # Flush the last token's CPU compute_ms (no next-token boundary to trigger it).
+    if _smoe_base._cpu_ms_cur_token_samples:
+        _smoe_base.cpu_compute_ms_per_token.append(
+            sum(_smoe_base._cpu_ms_cur_token_samples) /
+            len(_smoe_base._cpu_ms_cur_token_samples))
+        _smoe_base._cpu_ms_cur_token_samples = []
+
+    print(f"[CPU compute_ms per token] prompt={i}: {_smoe_base.cpu_compute_ms_per_token}")
+
     # Print prompt-level totals here.
     decode_tokens   = expertcache.tokens - 1   # subtract 1 for prefill token
     avg_decode_time = (expertcache.decode_time / decode_tokens
