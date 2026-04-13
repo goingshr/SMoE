@@ -61,9 +61,9 @@ python main.py \
     --config_path  configs/qwen2moe_config.json \
     --dataset_path gaokao_math_ii \
     --input_num    20 \
-    --output_len   100 \
-    --cpu_cores    3 \
-    --GPU_mem      24
+    --output_len   60 \
+    --cpu_cores    4 \
+    --GPU_mem      43
 ```
 
 ---
@@ -78,9 +78,9 @@ python main.py \
 | `--dataset_path` | `gaokao_math_ii` | Dataset name or path passed to `utils/load_dataset.py` |
 | `--input_num` | `20` | Number of prompts to run |
 | `--batch_size` | `1` | Batch size per forward pass |
-| `--output_len` | `100` | Max new tokens to generate per prompt |
-| `--GPU_mem` | `45` | GPU memory in GB, used to compute expert cache offload size |
-| `--cpu_cores` | `3` | Number of CPU cores allocated to inference (n-1 for compute, 1 for loading/bg worker) |
+| `--output_len` | `60` | Max new tokens to generate per prompt |
+| `--GPU_mem` | `43` | GPU memory in GB, used to compute expert cache offload size |
+| `--cpu_cores` | `4` | Number of CPU cores allocated to inference (n-1 for compute, 1 for loading/bg worker) |
 | `--debug` | `False` | Enable debugpy remote debugger on port 9501 |
 
 ## Auto-Download
@@ -133,9 +133,9 @@ All `run.sh` arguments are controlled via environment variables (same names, upp
 | `DATASET_PATH` | `gaokao_math_ii` | Same as `--dataset_path` |
 | `INPUT_NUM` | `20` | Same as `--input_num` |
 | `BATCH_SIZE` | `1` | Same as `--batch_size` |
-| `OUTPUT_LEN` | `100` | Same as `--output_len` |
-| `GPU_MEM` | `45` | Same as `--GPU_mem` |
-| `CPU_CORES` | `3` | Same as `--cpu_cores` |
+| `OUTPUT_LEN` | `60` | Same as `--output_len` |
+| `GPU_MEM` | `43` | Same as `--GPU_mem` |
+| `CPU_CORES` | `4` | Same as `--cpu_cores` |
 | `LOG_LEVEL` | `INFO` | Logging level: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
 | `LOG_DIR` | `./logs` | Directory for log files |
 | `CONDA_ENV` | `SMoE` | Conda environment to activate |
