@@ -36,18 +36,21 @@ pip install -r requirements.txt
 # Qwen2-MoE
 MODEL_NAME=qwenmoe \
 MODEL_PATH=parameters/qwenmoe \
+GPU_MEM=43 \
 CONFIG_PATH=configs/qwen2moe_config.json \
 bash run.sh
 
 # DeepSeek-MoE
 MODEL_NAME=deepseekmoe \
 MODEL_PATH=parameters/deepseekmoe \
+GPU_MEM=10 \
 CONFIG_PATH=configs/deepseekmoe_config.json \
 bash run.sh
 
 # Xverse-MoE
 MODEL_NAME=xversemoe \
 MODEL_PATH=parameters/xversemoe \
+GPU_MEM=14 \
 CONFIG_PATH=configs/xversemoe_config.json \
 bash run.sh
 ```
@@ -139,6 +142,7 @@ All `run.sh` arguments are controlled via environment variables (same names, upp
 | `LOG_LEVEL` | `INFO` | Logging level: `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
 | `LOG_DIR` | `./logs` | Directory for log files |
 | `CONDA_ENV` | `SMoE` | Conda environment to activate |
+
 
 ---
 
