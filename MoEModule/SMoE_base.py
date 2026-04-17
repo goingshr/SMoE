@@ -405,18 +405,26 @@ class AbstractMoELayer(nn.Module, ABC):
         self._cpu_compute(cpu_uids, expert_token_dic, expert_out_dict)
 
         # ── B8: wait for all PCIe loads + DMA ────────────────────────────
-        _tb8 = time.time()
         self.ExpertCache.wait_until_queue_empty()
         self.ExpertCache.load_stream.synchronize()
-        _b8_elapsed = time.time() - _tb8
+        # All CUDA events on load_stream are now queryable.
 
-        if pcie_uids and _b8_elapsed > 0:
-            actual_per_expert = _b8_elapsed / len(pcie_uids)
-            # print(f'PCIe load time: {actual_per_expert:f} s per expert (total {len(pcie_uids)} experts)', flush=True)
-            lst = self.ExpertCache.LoadTimeOneExpert
-            lst.append(actual_per_expert * 1.2)  # adjust by 1.2 to account for GPU compute time after load
-            if len(lst) > 10:
-                self.ExpertCache.LoadTimeOneExpert = lst[-10:]
+        if pcie_uids:
+            # Measure true per-expert DMA time via CUDA events recorded in _swap().
+            # elapsed_time() returns ms; we convert to seconds.
+            # This is independent of how long _cpu_compute took.
+            dma_times = []
+            for uid in pcie_uids:
+                evts = self.ExpertCache._pcie_timing.pop(uid, None)
+                if evts is not None:
+                    start_evt, done_evt = evts
+                    dma_times.append(start_evt.elapsed_time(done_evt) / 1000.0)
+            if dma_times:
+                actual_per_expert = sum(dma_times) / len(dma_times)
+                lst = self.ExpertCache.LoadTimeOneExpert
+                lst.append(actual_per_expert)
+                if len(lst) > 10:
+                    self.ExpertCache.LoadTimeOneExpert = lst[-10:]
 
         # ── B9: wait for background thread ───────────────────────────────
         self._bg_worker.wait()

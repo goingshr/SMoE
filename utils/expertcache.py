@@ -284,6 +284,9 @@ class ExpertCache:
         # DO NOT use _swap() wall time here — that only measures DMA submission (~0.2ms),
         # not DMA completion. The balancer needs completion time to compare with cpucost.
         self.LoadTimeOneExpert = [0.002]
+        # Per-expert CUDA timing events set by loading thread, consumed by B8.
+        # Key: ExpertUID  →  (start_event, done_event)
+        self._pcie_timing: dict = {}
     def _check_module(self, module: nn.Module):
         assert isinstance(module.storage, torch.UntypedStorage)
         if self.module_type is None:
@@ -363,6 +366,13 @@ class ExpertCache:
         nbytes  = self.offloaded_storages[info_to_load_index].storage.nbytes()
         stream_handle = self.load_stream.cuda_stream
 
+        # Record start event BEFORE the DMA is submitted.
+        # CUDA stream is ordered, so elapsed_time(copy_start_event, copy_done_event)
+        # after load_stream.synchronize() gives the true per-expert DMA duration,
+        # completely independent of CPU activity on the main thread.
+        copy_start_event = torch.cuda.Event(enable_timing=True)
+        copy_start_event.record(self.load_stream)
+
         if _CUDART_AVAILABLE:
             err = _cudaMemcpyAsync(
                 ctypes.c_void_p(dst_ptr),
@@ -382,17 +392,12 @@ class ExpertCache:
                 self.main_modules[info_to_evict_index].storage.copy_(
                     self.offloaded_storages[info_to_load_index].storage)
 
-        # Record event immediately after submitting (before DMA completes).
-        # compute_stream.wait_event(copy_done_event) will stall the GPU — not the CPU.
-        copy_done_event = torch.cuda.Event()
+        # Record done event AFTER the DMA is submitted on the stream.
+        # GPU stream ordering guarantees this event fires only after the copy completes.
+        copy_done_event = torch.cuda.Event(enable_timing=True)
         copy_done_event.record(self.load_stream)
 
-        # NOTE: do NOT update LoadTimeOneExpert here — elapsed only measures
-        # cudaMemcpyAsync submission time (~0.2ms), not DMA completion.
-        # LoadTimeOneExpert is updated in qwen_moe.py B8 with the real
-        # per-expert DMA time (B8_elapsed / n_pcie_experts).
-
-        return copy_done_event
+        return copy_start_event, copy_done_event
 
     def get_compute_expert(self,uid:ExpertUID,offload=False):
         with self.mtx:
@@ -530,7 +535,7 @@ class ExpertCache:
                 # gen_snapshot is still valid (we just confirmed it above)
 
             # ── phase 3: async PCIe copy (outside lock) ──────────────────────────
-            copy_done_event = self._swap(loadindex, evictindex)
+            copy_start_event, copy_done_event = self._swap(loadindex, evictindex)
 
             # ── phase 4: commit metadata; suppress callback if generation changed ─
             with self.cv:
@@ -542,6 +547,9 @@ class ExpertCache:
                 self.registered_experts[uid].loading = False
                 self.registered_experts[uid].offloaded = False
                 self.cache_infos.swap(info_to_load, info_to_evict)
+
+                # Store CUDA timing events for B8 to read after synchronize().
+                self._pcie_timing[uid] = (copy_start_event, copy_done_event)
 
                 # Only fire callback if clear_queue() was NOT called after our snapshot.
                 # If generation changed, the layer that requested this prefetch is gone;
@@ -723,24 +731,31 @@ def CPU_load_management(uid_batch, cpucost, loadcost, prefetch_pcie_budget=0.0):
     cpulst  = []
     loadlst = []
     for uid in uids:
-        # Assign to whichever side currently has less accumulated cost.
-        # Tie → prefer CPU (PCIe DMA is the harder bottleneck to hide).
-        if all_loadcost < all_cpucost:
-            loadlst.append(uid)
-            all_loadcost += loadcost
+        # TODO实现：如果当前两条流水线完全空闲（耗时均为0），优先分配给单次开销较小的资源
+        if all_cpucost == 0.0 and all_loadcost == 0.0:
+            if loadcost <= cpucost:
+                loadlst.append(uid)
+                all_loadcost += loadcost
+            else:
+                cpulst.append(uid)
+                all_cpucost += cpucost
+        # 常规贪心逻辑：分配给当前累计开销较小（先执行完）的流水线
         else:
-            cpulst.append(uid)
-            all_cpucost += cpucost
+            if all_loadcost <= all_cpucost:
+                loadlst.append(uid)
+                all_loadcost += loadcost
+            else:
+                cpulst.append(uid)
+                all_cpucost += cpucost
 
     if tokens > 0:  # decode 阶段才打印
-        pass
-        # print('CPU_load_management: cpucost={}'.format(cpucost))
-        # print('CPU_load_management: loadcost={}'.format(loadcost))
-        # print('CPU_load_management: prefetch_pcie_budget={}'.format(prefetch_pcie_budget))
-        # print('CPU_load_management: final cpulst={}'.format(cpulst))
-        # print('CPU_load_management: final loadlst={}'.format(loadlst),flush=True)
-
-    return loadlst, cpulst
+        print('CPU_load_management: cpucost={}'.format(cpucost))
+        print('CPU_load_management: loadcost={}'.format(loadcost))
+        print('CPU_load_management: prefetch_pcie_budget={}'.format(prefetch_pcie_budget))
+        print('CPU_load_management: final cpulst={}'.format(cpulst))
+        print('CPU_load_management: final loadlst={}'.format(loadlst),flush=True)
+                
+    return loadlst, cpulst 
 
             
 import numpy as np
