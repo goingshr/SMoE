@@ -1,0 +1,680 @@
+{
+  "baseline_revision": "06eb7e11881a53f1a3c3d4b93b72449f973d201d",
+  "artifact_root": "/home/guoying/SMoE/阶段2优化",
+  "metric": "mean of five per-prompt inner-model decode forward wall times (seconds)",
+  "acceptance_runs": [
+    "final_01",
+    "final_02"
+  ],
+  "reference_run": "baseline_02",
+  "contract": {
+    "environment": "Nmoe",
+    "gpu": 0,
+    "cpu_cores": 3,
+    "gpu_mem": 43,
+    "prefetch": false,
+    "dtype": "bfloat16",
+    "dataset": "WiC first five",
+    "batch_size": 1,
+    "output_len": 100,
+    "timed_decode_tokens_per_prompt": 99
+  },
+  "runs": [
+    {
+      "run": "arena_01",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.17296,
+      "stdev": 0.03149155442336881,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 3.582,
+          "avg_decode": 0.2291,
+          "total": 26.6921,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 4.0366,
+          "avg_decode": 0.1632,
+          "total": 20.3926,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 3.8463,
+          "avg_decode": 0.1575,
+          "total": 19.637,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 3.8355,
+          "avg_decode": 0.1587,
+          "total": 19.7449,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 3.7932,
+          "avg_decode": 0.1563,
+          "total": 19.4643,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        4.433,
+        2.484,
+        2.454,
+        2.458,
+        2.457
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[0, 1] compute_packages=[0]  shared=2 shared_package=0",
+      "peak_allocated": null,
+      "peak_reserved": null,
+      "driver_peak_mib": null,
+      "gpu0_max_concurrent_processes": null,
+      "monitor_samples": 0,
+      "log_sha256": "6105fbb6586c90aa00b29540b510d50dbe455b742964629b1572adde29ce28d1",
+      "log": "过程/arena_01/console.log"
+    },
+    {
+      "run": "baseline_01",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.25207999999999997,
+      "stdev": 0.03489487068323939,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 5.6717,
+          "avg_decode": 0.2488,
+          "total": 30.6851,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 4.0361,
+          "avg_decode": 0.1928,
+          "total": 23.3259,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 3.8694,
+          "avg_decode": 0.2678,
+          "total": 30.6271,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 4.2044,
+          "avg_decode": 0.2746,
+          "total": 31.637,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 4.1406,
+          "avg_decode": 0.2764,
+          "total": 31.7597,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        5.395,
+        2.805,
+        4.454,
+        4.523,
+        4.839
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[0, 2] compute_packages=[0]  shared=3 shared_package=0",
+      "peak_allocated": null,
+      "peak_reserved": null,
+      "driver_peak_mib": null,
+      "gpu0_max_concurrent_processes": null,
+      "monitor_samples": 0,
+      "log_sha256": "7912240cc443496905f39019dae4a60770938b472827cbb97b87ad876c5920ef",
+      "log": "过程/baseline_01/console.log"
+    },
+    {
+      "run": "baseline_02",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.18506,
+      "stdev": 0.004146444259844814,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 2.1187,
+          "avg_decode": 0.1823,
+          "total": 20.4527,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 3.9047,
+          "avg_decode": 0.1891,
+          "total": 22.8224,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 3.8918,
+          "avg_decode": 0.1838,
+          "total": 22.2896,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 3.9546,
+          "avg_decode": 0.1897,
+          "total": 22.9349,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 3.8898,
+          "avg_decode": 0.1804,
+          "total": 21.9486,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        2.504,
+        2.513,
+        2.508,
+        2.515,
+        2.516
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[1, 2] compute_packages=[0]  shared=3 shared_package=0",
+      "peak_allocated": null,
+      "peak_reserved": null,
+      "driver_peak_mib": 46496,
+      "gpu0_max_concurrent_processes": 1,
+      "monitor_samples": 40,
+      "log_sha256": "a54f1b5fe43221dc889dc0c6badde3ad80c35a297ced1699e0c6673fd0dc944d",
+      "log": "过程/baseline_02/console.log"
+    },
+    {
+      "run": "direct_01",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.20918,
+      "stdev": 0.02838180755343113,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 2.7005,
+          "avg_decode": 0.2338,
+          "total": 26.1812,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 4.0078,
+          "avg_decode": 0.1823,
+          "total": 22.2592,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 3.8589,
+          "avg_decode": 0.2314,
+          "total": 27.0006,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 4.0294,
+          "avg_decode": 0.1747,
+          "total": 21.526,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 3.904,
+          "avg_decode": 0.2237,
+          "total": 26.2805,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        4.387,
+        2.675,
+        4.125,
+        2.561,
+        3.859
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[1, 2] compute_packages=[0]  shared=3 shared_package=0",
+      "peak_allocated": null,
+      "peak_reserved": null,
+      "driver_peak_mib": null,
+      "gpu0_max_concurrent_processes": null,
+      "monitor_samples": 0,
+      "log_sha256": "ee770f643e39223c3346ded2fbb41597b3e6152fd1730ca5b0ac5ead217e008b",
+      "log": "过程/direct_01/console.log"
+    },
+    {
+      "run": "dma_01",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.13976159999999999,
+      "stdev": 0.013350668552548222,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 1.9764,
+          "avg_decode": 0.116115,
+          "total": 13.7601,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 2.2061,
+          "avg_decode": 0.148254,
+          "total": 17.0843,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 2.2182,
+          "avg_decode": 0.146661,
+          "total": 16.9389,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 2.2312,
+          "avg_decode": 0.143833,
+          "total": 16.6714,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 2.238,
+          "avg_decode": 0.143945,
+          "total": 16.6899,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        2.466,
+        2.43,
+        2.432,
+        2.427,
+        2.427
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[1, 2] compute_packages=[0]  shared=3 shared_package=0",
+      "peak_allocated": 46263630336,
+      "peak_reserved": 48289021952,
+      "driver_peak_mib": 46656,
+      "gpu0_max_concurrent_processes": 1,
+      "monitor_samples": 41,
+      "log_sha256": "d8cfbc083122e272a4cde78c50b10c7f5aed175a670c177909e965738c18f664",
+      "log": "过程/dma_01/console.log"
+    },
+    {
+      "run": "final_01",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.1459004,
+      "stdev": 0.0022239544284899417,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 1.9833,
+          "avg_decode": 0.147758,
+          "total": 16.9102,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 2.1923,
+          "avg_decode": 0.145764,
+          "total": 16.824,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 2.2272,
+          "avg_decode": 0.143588,
+          "total": 16.6435,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 2.2051,
+          "avg_decode": 0.148519,
+          "total": 17.1096,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 2.2166,
+          "avg_decode": 0.143873,
+          "total": 16.6607,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        2.412,
+        2.407,
+        2.41,
+        2.418,
+        2.412
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[1, 2] compute_packages=[0]  shared=3 shared_package=0",
+      "peak_allocated": 46263630336,
+      "peak_reserved": 48289021952,
+      "driver_peak_mib": 46628,
+      "gpu0_max_concurrent_processes": 1,
+      "monitor_samples": 41,
+      "log_sha256": "7904f595ae71e55c83540600fca4df4194147da581fe37e28d95e4ad7ac6cff3",
+      "log": "过程/final_01/console.log"
+    },
+    {
+      "run": "final_02",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.144384,
+      "stdev": 0.002042855232266832,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 2.0069,
+          "avg_decode": 0.144169,
+          "total": 16.5672,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 2.1469,
+          "avg_decode": 0.144897,
+          "total": 16.6928,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 2.2089,
+          "avg_decode": 0.14258,
+          "total": 16.5255,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 2.2016,
+          "avg_decode": 0.147586,
+          "total": 17.014,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 2.206,
+          "avg_decode": 0.142688,
+          "total": 16.5335,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        2.377,
+        2.379,
+        2.38,
+        2.391,
+        2.387
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[5, 6] compute_packages=[0]  shared=7 shared_package=0",
+      "peak_allocated": 46263630336,
+      "peak_reserved": 48289021952,
+      "driver_peak_mib": 46630,
+      "gpu0_max_concurrent_processes": 1,
+      "monitor_samples": 41,
+      "log_sha256": "46a5aa641ed4118924d657cc263d377acb7fdc0deb6f6a97f34c1b30058e39ec",
+      "log": "过程/final_02/console.log"
+    },
+    {
+      "run": "graph_01",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.17226,
+      "stdev": 0.003426076473168685,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 1.9918,
+          "avg_decode": 0.1737,
+          "total": 19.4834,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 3.8196,
+          "avg_decode": 0.175,
+          "total": 21.3473,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 3.9166,
+          "avg_decode": 0.17,
+          "total": 20.9463,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 3.9222,
+          "avg_decode": 0.1752,
+          "total": 21.4691,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 3.8301,
+          "avg_decode": 0.1674,
+          "total": 20.6079,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        2.465,
+        2.475,
+        2.484,
+        2.47,
+        2.48
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[3, 4] compute_packages=[0]  shared=5 shared_package=0",
+      "peak_allocated": null,
+      "peak_reserved": null,
+      "driver_peak_mib": null,
+      "gpu0_max_concurrent_processes": null,
+      "monitor_samples": 0,
+      "log_sha256": "de989020a7c61c0c4a93f4371572945835a3827f719f2eafa4fe1a4d8dd3ed7d",
+      "log": "过程/graph_01/console.log"
+    },
+    {
+      "run": "handoff_01",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.17466,
+      "stdev": 0.03076918913458721,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 4.4279,
+          "avg_decode": 0.2294,
+          "total": 27.5853,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 3.9631,
+          "avg_decode": 0.1647,
+          "total": 20.4663,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 3.9103,
+          "avg_decode": 0.1623,
+          "total": 20.173,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 3.8698,
+          "avg_decode": 0.161,
+          "total": 20.0078,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 3.8893,
+          "avg_decode": 0.1559,
+          "total": 19.5266,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        4.404,
+        2.51,
+        2.461,
+        2.454,
+        2.449
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[0, 1] compute_packages=[0]  shared=2 shared_package=0",
+      "peak_allocated": null,
+      "peak_reserved": null,
+      "driver_peak_mib": 46656,
+      "gpu0_max_concurrent_processes": 1,
+      "monitor_samples": 54,
+      "log_sha256": "576982b1654cdcbda4d5a222746f6156a0bb5748a660e127f0bd981b06e11626",
+      "log": "过程/handoff_01/console.log"
+    },
+    {
+      "run": "pinned_team_01",
+      "diagnostic": false,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.18254,
+      "stdev": 0.042233553011793844,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 4.4597,
+          "avg_decode": 0.2579,
+          "total": 30.4279,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 1,
+          "prefill": 4.2333,
+          "avg_decode": 0.167,
+          "total": 20.9718,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 2,
+          "prefill": 3.9589,
+          "avg_decode": 0.1629,
+          "total": 20.2895,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 3,
+          "prefill": 3.937,
+          "avg_decode": 0.1657,
+          "total": 20.5409,
+          "decode_tokens": 99
+        },
+        {
+          "prompt": 4,
+          "prefill": 3.8557,
+          "avg_decode": 0.1592,
+          "total": 19.8133,
+          "decode_tokens": 99
+        }
+      ],
+      "cpu_expert_ms": [
+        5.186,
+        2.564,
+        2.505,
+        2.5,
+        2.486
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[1, 3] compute_packages=[0]  shared=4 shared_package=0",
+      "peak_allocated": 46263630336,
+      "peak_reserved": 48289021952,
+      "driver_peak_mib": 46656,
+      "gpu0_max_concurrent_processes": 1,
+      "monitor_samples": 54,
+      "log_sha256": "619fd5e280debb284829b7f75632411bff90536198fea5ee968e986221bd5f9d",
+      "log": "过程/pinned_team_01/console.log"
+    },
+    {
+      "run": "profile_arena",
+      "diagnostic": true,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.184909,
+      "stdev": null,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 3.8867,
+          "avg_decode": 0.184909,
+          "total": 11.569,
+          "decode_tokens": 19
+        }
+      ],
+      "cpu_expert_ms": [
+        2.658
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[1, 2] compute_packages=[0]  shared=3 shared_package=0",
+      "peak_allocated": 46263630336,
+      "peak_reserved": 48289021952,
+      "driver_peak_mib": 46630,
+      "gpu0_max_concurrent_processes": 1,
+      "monitor_samples": 34,
+      "log_sha256": "9434803ce4b35054ecda94fa7e0a81a151c2de378bfba1d2264f0134b21c2f81",
+      "log": "过程/profile_arena/console.log"
+    },
+    {
+      "run": "profile_final",
+      "diagnostic": true,
+      "complete": true,
+      "returncode": 0,
+      "mean": 0.166454,
+      "stdev": null,
+      "prompts": [
+        {
+          "prompt": 0,
+          "prefill": 1.9993,
+          "avg_decode": 0.166454,
+          "total": 9.3444,
+          "decode_tokens": 19
+        }
+      ],
+      "cpu_expert_ms": [
+        2.408
+      ],
+      "affinity": "[AFFINITY] n=3  compute=[1, 3] compute_packages=[0]  shared=4 shared_package=0",
+      "peak_allocated": 46263630336,
+      "peak_reserved": 48289021952,
+      "driver_peak_mib": 46630,
+      "gpu0_max_concurrent_processes": 1,
+      "monitor_samples": 27,
+      "log_sha256": "614e30de8d2e73640251b57b2e3dcd4d8309720180f7159c311c4dd05769ee61",
+      "log": "过程/profile_final/console.log"
+    }
+  ]
+}

@@ -39,6 +39,10 @@ class Qwen2MoeMLP(nn.Module):
                                    bias=False, dtype=torch.bfloat16, device=config.device)
         self.act_fn = ACT2FN[config.hidden_act]
         self._cpu_gate_up_weight = None
+        self._gpu_gate_up_weight = None
+        self._gpu_fuse_gate_up = os.environ.get(
+            "SMOE_GPU_BF16_FUSED_GATE_UP", "1"
+        ).strip().lower() not in {"0", "false", "off", "no"}
         self._cpu_fuse_gate_up = os.environ.get(
             "SMOE_CPU_BF16_FUSED_GATE_UP", "1"
         ).strip().lower() not in {"0", "false", "off", "no"}
@@ -60,7 +64,23 @@ class Qwen2MoeMLP(nn.Module):
         self._cpu_gate_up_weight = weight
         return True
 
+    def configure_gpu_bf16_gate_up(self, weight: torch.Tensor) -> bool:
+        """Use the existing adjacent gate/up storage without duplicating weights."""
+        if not self._gpu_fuse_gate_up:
+            return False
+        if (weight.device.type != "cuda" or weight.dtype != torch.bfloat16
+                or tuple(weight.shape) != (2 * self.intermediate_size, self.hidden_size)
+                or not weight.is_contiguous()):
+            raise ValueError("GPU gate/up fusion requires contiguous CUDA BF16 weights")
+        self._gpu_gate_up_weight = weight
+        return True
+
     def forward(self, x):
+        if (x.device.type == "cuda" and self._gpu_gate_up_weight is not None
+                and x.numel() == self.hidden_size and not torch.is_grad_enabled()):
+            gate_up = F.linear(x, self._gpu_gate_up_weight)
+            gate, up = gate_up.split(self.intermediate_size, dim=-1)
+            return self.down_proj(self.act_fn(gate) * up)
         if x.device.type == "cpu" and self._cpu_gate_up_weight is not None:
             gate_up = F.linear(x, self._cpu_gate_up_weight)
             gate, up = gate_up.split(self.intermediate_size, dim=-1)
@@ -93,6 +113,11 @@ class Qwen2MoeSparseMoeBlockwithCache(AbstractMoELayer):
         self.gate               = gate
         self.shared_expert      = shared_experts
         self.shared_expert_gate = shared_expert_gate
+        self._shared_graph = None
+        if os.environ.get("SMOE_EXPERT_GRAPH", "1") == "1":
+            from MoEModule.decode_graph import DecodeExpertGraph
+            self._shared_graph = DecodeExpertGraph(
+                self._compute_shared_eager, config.hidden_size, config.device)
 
         # Next-layer modules for prefetch prediction
         self.next_attention                = next_attention
@@ -117,6 +142,11 @@ class Qwen2MoeSparseMoeBlockwithCache(AbstractMoELayer):
         return self.norm_topk_prob
 
     def compute_shared_expert(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self._shared_graph is not None:
+            return self._shared_graph(hidden_states)
+        return self._compute_shared_eager(hidden_states)
+
+    def _compute_shared_eager(self, hidden_states: torch.Tensor) -> torch.Tensor:
         shared_out = self.shared_expert(hidden_states)
         return F.sigmoid(self.shared_expert_gate(hidden_states)) * shared_out
 

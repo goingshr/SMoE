@@ -238,6 +238,13 @@ class ExpertCache:
             self.main_modules.append(self._check_module(make_module_cuda(model_path,model_type,config.device,state_dict_00)))
         # logger.debug(f"Current CPU memory usage: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
         self.main_infos = [0 for _ in range(main_size)]
+        logger.info(
+            "[GPU decode] graph_slots=%d/%d fused_gate_up_slots=%d/%d",
+            sum(getattr(m, "decode_graph", None) is not None for m in self.main_modules),
+            main_size,
+            sum(getattr(m, "gpu_bf16_gate_up_fused", False) for m in self.main_modules),
+            main_size,
+        )
 
         assert self.module_size is not None
         self.offloaded_storages = []
@@ -289,8 +296,12 @@ class ExpertCache:
         self.predict_stream = torch.cuda.Stream(device=config.device)
         self.on_expert_loaded = None
         self.pending_callbacks = 0
+        self.measure_dma = os.environ.get("SMOE_MEASURE_DMA", "1") == "1"
+        self._dma_timings = deque()
+        self.measured_dma_copies = 0
+        logger.info("[DMA timing] whole_transfer_events=%s", self.measure_dma)
         # Initial estimate: ~2ms per expert actual PCIe DMA time (52.5MB @ ~26GB/s effective).
-        # This is updated in-flight from real B8-elapsed / n_pcie_experts measurements.
+        # Updated after B8, using complete DMA events when measurement is enabled.
         # DO NOT use _swap() wall time here — that only measures DMA submission (~0.2ms),
         # not DMA completion. The balancer needs completion time to compare with cpucost.
         self.LoadTimeOneExpert = [0.002]
@@ -373,6 +384,11 @@ class ExpertCache:
         nbytes  = self.offloaded_storages[info_to_load_index].storage.nbytes()
         stream_handle = self.load_stream.cuda_stream
 
+        copy_start_event = None
+        if self.measure_dma:
+            copy_start_event = torch.cuda.Event(enable_timing=True)
+            copy_start_event.record(self.load_stream)
+
         if _CUDART_AVAILABLE:
             err = _cudaMemcpyAsync(
                 ctypes.c_void_p(dst_ptr),
@@ -394,15 +410,32 @@ class ExpertCache:
 
         # Record event immediately after submitting (before DMA completes).
         # compute_stream.wait_event(copy_done_event) will stall the GPU — not the CPU.
-        copy_done_event = torch.cuda.Event()
+        copy_done_event = torch.cuda.Event(enable_timing=self.measure_dma)
         copy_done_event.record(self.load_stream)
+        if copy_start_event is not None:
+            self._dma_timings.append((copy_start_event, copy_done_event))
 
         # NOTE: do NOT update LoadTimeOneExpert here — elapsed only measures
         # cudaMemcpyAsync submission time (~0.2ms), not DMA completion.
-        # LoadTimeOneExpert is updated in qwen_moe.py B8 with the real
-        # per-expert DMA time (B8_elapsed / n_pcie_experts).
+        # B8 consumes complete event durations, or uses the legacy residual
+        # host-wait estimator when event measurement is disabled.
 
         return copy_done_event
+
+    def consume_dma_timings(self):
+        """Update the balancer from complete DMA spans after the B8 drain.
+
+        B8 host wait measures only the tail left *after* CPU expert work, so
+        it is not the cost of loading an expert. Events measure the entire
+        transfer on its actual stream, without adding another synchronization.
+        The loader appends before popping its queue item; the caller has
+        waited for both an empty queue and load_stream completion.
+        """
+        while self._dma_timings:
+            begin, end = self._dma_timings.popleft()
+            self.LoadTimeOneExpert.append(begin.elapsed_time(end) / 1000.0)
+            self.measured_dma_copies += 1
+        self.LoadTimeOneExpert = self.LoadTimeOneExpert[-10:]
 
     def get_compute_expert(self,uid:ExpertUID,offload=False):
         with self.mtx:

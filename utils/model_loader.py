@@ -254,7 +254,16 @@ class ExpertWrapper(nn.Module):
         self.cpu_bf16_gate_up_fused = (
             getattr(expert_module, "_cpu_gate_up_weight", None) is not None
         )
+        self.gpu_bf16_gate_up_fused = (
+            getattr(expert_module, "_gpu_gate_up_weight", None) is not None
+        )
         self.expert_module = lambda *args, **kwargs: expert_module(*args, **kwargs)
+        self.decode_graph = None
+        if (not tocpu and model_type == "qwenmoe"
+                and os.environ.get("SMOE_EXPERT_GRAPH", "1") == "1"):
+            from MoEModule.decode_graph import DecodeExpertGraph
+            self.decode_graph = DecodeExpertGraph(
+                self.expert_module, expert_module.hidden_size, device)
         self._register_state_dict_hook(self._add_storage_to_state_dict_hook)
         self._register_load_state_dict_pre_hook(self._load_storage_from_state_dict_hook)
 
@@ -269,6 +278,8 @@ class ExpertWrapper(nn.Module):
         del state_dict[prefix + 'storage']
 
     def forward(self, *args, **kwargs):
+        if self.decode_graph is not None and len(args) == 1 and not kwargs:
+            return self.decode_graph(args[0])
         return self.expert_module(*args, **kwargs)
 
     def replace_layer_storage_deepseekmoe(self,
@@ -330,14 +341,15 @@ class ExpertWrapper(nn.Module):
             patched.weight.data = newtensor
             assert patched.weight.data.data_ptr() == newtensor.data_ptr()
 
-        configure_gate_up = getattr(layer, "configure_cpu_bf16_gate_up", None)
-        if tocpu and configure_gate_up is not None:
+        configure_gate_up = getattr(layer, "configure_cpu_bf16_gate_up" if tocpu
+                                    else "configure_gpu_bf16_gate_up", None)
+        if configure_gate_up is not None:
             gate = newtensors["gate_proj"]
             up = newtensors["up_proj"]
             assert gate.data_ptr() + gate.nbytes == up.data_ptr()
             gate_up_storage = storage[offsets[0]:offsets[2]]
             gate_up = torch.as_tensor(
-                gate_up_storage, dtype=gate.dtype, device="cpu"
+                gate_up_storage, dtype=gate.dtype, device=gate.device
             ).view(gate.size(0) + up.size(0), gate.size(1))
             configure_gate_up(gate_up)
         return layer, storage

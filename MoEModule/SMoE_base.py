@@ -141,6 +141,18 @@ class AbstractMoELayer(nn.Module, ABC):
         self._batch_cpu_transfers = os.environ.get(
             "SMOE_CPU_BATCH_TRANSFERS", "1"
         ).strip().lower() not in {"0", "false", "off", "no"}
+        self._decode_direct = os.environ.get(
+            "SMOE_DECODE_DIRECT", "1"
+        ).strip().lower() not in {"0", "false", "off", "no"}
+        self._decode_direct_logged = False
+        self._decode_stream_chain = os.environ.get(
+            "SMOE_DECODE_STREAM_CHAIN", "1"
+        ).strip().lower() not in {"0", "false", "off", "no"}
+        self._pinned_decode = os.environ.get(
+            "SMOE_PINNED_DECODE", "1"
+        ).strip().lower() not in {"0", "false", "off", "no"}
+        self._decode_arena = None
+        self._staged_decode_input = None
         if layerid == 0:
             logger.info(
                 "[CPU transfer] batch_repeated_activations_and_outputs=%s "
@@ -306,6 +318,18 @@ class AbstractMoELayer(nn.Module, ABC):
         expert_token_dic = {}
         for eid, (tok_indices, slot_indices) in expert_token_map.items():
             uid   = (self.layerid, eid)
+            if self._decode_direct and num_tokens == 1 and len(tok_indices) == 1:
+                # A top-k expert sees the same sole token. Views preserve the
+                # FP32 gate and avoid tiny index transfers and gather launches.
+                slot = slot_indices[0]
+                expert_token_dic[uid] = [
+                    hidden_states, topk_weight[:, slot:slot + 1], None,
+                    tok_indices,
+                ]
+                if not self._decode_direct_logged:
+                    logger.info("[decode direct] layer=%d engaged", self.layerid)
+                    self._decode_direct_logged = True
+                continue
             top_x = torch.tensor(tok_indices,  dtype=torch.long,
                                  device=hidden_states.device)
             slots = torch.tensor(slot_indices, dtype=torch.long,
@@ -318,6 +342,11 @@ class AbstractMoELayer(nn.Module, ABC):
             ]
 
         # ── B3: shared expert (GPU default stream) ───────────────────────
+        self._staged_decode_input = None
+        if (self._pinned_decode and self._batch_cpu_transfers and self.if_usecpu
+                and num_tokens == 1 and hidden_states.is_cuda
+                and all(len(v[3]) == 1 for v in expert_token_dic.values())):
+            self._stage_decode_input(hidden_states, top_k)
         shared_expert_output = self.compute_shared_expert(hidden_states)
 
         # ── MoE inference (B4 – B13) ─────────────────────────────────────
@@ -343,6 +372,7 @@ class AbstractMoELayer(nn.Module, ABC):
     # Background worker: cache-hit GPU compute + optional prefetch predict
     # ------------------------------------------------------------------
 
+    @torch.no_grad()
     def _work_cachehit_and_predict(
             self, hit_uids, expert_token_dic, expert_out_dict,
             miss_count, residual_cur, identity, bsh, shared_expert_output):
@@ -432,7 +462,9 @@ class AbstractMoELayer(nn.Module, ABC):
         self.ExpertCache.load_stream.synchronize()
         _b8_elapsed = time.time() - _tb8
 
-        if pcie_uids and _b8_elapsed > 0:
+        if getattr(self.ExpertCache, "measure_dma", False):
+            self.ExpertCache.consume_dma_timings()
+        elif pcie_uids and _b8_elapsed > 0:
             actual_per_expert = _b8_elapsed / len(pcie_uids)
             lst = self.ExpertCache.LoadTimeOneExpert
             lst.append(actual_per_expert)
@@ -450,8 +482,26 @@ class AbstractMoELayer(nn.Module, ABC):
             expert_out_dict[uid] = out
 
         # ── B12: sync GPU + scatter all expert outputs ───────────────────
-        torch.cuda.synchronize()
+        # With prefetch disabled, the current load queue has been drained and
+        # no new eviction can be submitted until the next layer's B0 tolist()
+        # completes. That mandatory readback drains the default stream before
+        # it can reuse any released weight slot. Keep the final-layer fence so
+        # the original model-forward timing boundary is not weakened.
+        chain_default_stream = (
+            self._decode_stream_chain and not self.if_prefetch
+            and bsh[0] * bsh[1] == 1
+            and self.layerid < getattr(self.config, "num_hidden_layers", 1) - 1
+            and torch.cuda.current_stream(identity.device)
+                == torch.cuda.default_stream(identity.device)
+        )
+        if not chain_default_stream:
+            torch.cuda.synchronize()
         for uid in expert_token_dic:
+            if expert_token_dic[uid][2] is None:
+                # Same expert order and one BF16 rounding per addition as the
+                # single-destination index_add_ reference.
+                final_hidden_states.add_(expert_out_dict[uid].to(hdtype))
+                continue
             final_hidden_states.index_add_(
                 0, expert_token_dic[uid][2],
                 expert_out_dict[uid].to(hdtype))
@@ -472,6 +522,31 @@ class AbstractMoELayer(nn.Module, ABC):
     # CPU compute for miss experts assigned to CPU
     # ------------------------------------------------------------------
 
+    def _stage_decode_input(self, hidden_states, top_k):
+        """Queue the sole D2H before shared/GPU experts, wait only on its event.
+
+        All transfers use the caller's stream. The CPU can start as soon as
+        this small copy completes, without waiting for subsequent GPU MLPs.
+        Each layer owns its buffers until the next invocation of that layer.
+        """
+        key = (hidden_states.shape[1], hidden_states.dtype, hidden_states.device, top_k)
+        if self._decode_arena is None or self._decode_arena[0] != key:
+            if self._decode_arena is not None:
+                self._decode_arena[3].synchronize()
+                self._decode_arena[4].synchronize()
+            host_input = torch.empty_like(hidden_states, device='cpu', pin_memory=True)
+            host_output = torch.empty((top_k, hidden_states.shape[1]),
+                                      dtype=hidden_states.dtype, device='cpu', pin_memory=True)
+            self._decode_arena = (key, host_input, host_output,
+                                  torch.cuda.Event(), torch.cuda.Event())
+            logger.info("[pinned decode] layer=%d arena_bytes=%d", self.layerid,
+                        host_input.nbytes + host_output.nbytes)
+        _, host_input, _, input_ready, _ = self._decode_arena
+        host_input.copy_(hidden_states, non_blocking=True)
+        input_ready.record(torch.cuda.current_stream(hidden_states.device))
+        self._staged_decode_input = (host_input, input_ready)
+        self._record_cpu_transfer(host_input, d2h=True)
+
     @torch.no_grad()
     def _cpu_compute(self, cpu_uids, expert_token_dic, expert_out_dict):
         if not cpu_uids:
@@ -486,6 +561,10 @@ class AbstractMoELayer(nn.Module, ABC):
         # expert outputs for one H2D transfer.
         cpu_inputs = {}
         cpu_results = []
+        staged = self._staged_decode_input
+        if staged is not None:
+            staged[1].synchronize()
+            cpu_inputs[(0,)] = staged[0]
         for uid in cpu_uids:
             expert = self.ExpertCache.get_compute_expert(uid, offload=True)
             token_key = tuple(expert_token_dic[uid][3])
@@ -501,12 +580,21 @@ class AbstractMoELayer(nn.Module, ABC):
             cpu_results.append((uid, out_cpu, compute_ms))
             self._record_cpu_compute(compute_ms)
 
-        if len(cpu_results) == 1:
+        if staged is not None:
+            _, _, host_output, _, output_copied = self._decode_arena
+            # Previous H2D must finish before the pinned source is overwritten.
+            output_copied.synchronize()
+            for row, (_, result, _) in enumerate(cpu_results):
+                host_output[row:row + 1].copy_(result)
+            output_batch_cpu = host_output[:len(cpu_results)]
+        elif len(cpu_results) == 1:
             output_batch_cpu = cpu_results[0][1]
         else:
             output_batch_cpu = torch.cat(
                 [result[1] for result in cpu_results], dim=0)
-        output_batch = output_batch_cpu.to(self.config.device)
+        output_batch = output_batch_cpu.to(self.config.device, non_blocking=staged is not None)
+        if staged is not None:
+            output_copied.record(torch.cuda.current_stream(output_batch.device))
         self._record_cpu_transfer(output_batch_cpu, d2h=False)
 
         row_offset = 0

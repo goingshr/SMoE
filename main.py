@@ -28,6 +28,9 @@ args = parser.parse_args()
 
 import os as _os
 
+print(f"[PYTHON] gil_enabled={getattr(sys, '_is_gil_enabled', lambda: True)()} "
+      f"switch_interval={sys.getswitchinterval()}")
+
 _placement     = select_cpu_placement(args.cpu_cores)
 _compute_cores = list(_placement.compute_cores)  # n-1 physical cores: CPU matmul
 _shared_core   = _placement.shared_core          # 1 core: loading + bg_worker
@@ -257,7 +260,7 @@ for i, _ in enumerate(all_inputs):
     decode_tokens   = expertcache.tokens - 1   # subtract 1 for prefill token
     avg_decode_time = (expertcache.decode_time / decode_tokens
                        if decode_tokens > 0 else float('nan'))
-    logger.info("[SMoE] prompt=%d  prefill=%.4f s  avg_decode=%.4f s  "
+    logger.info("[SMoE] prompt=%d  prefill=%.4f s  avg_decode=%.6f s  "
                 "total=%.4f s  decode_tokens=%d",
                 i, expertcache.prefill_time, avg_decode_time,
                 end - start, decode_tokens)
@@ -271,5 +274,22 @@ for i, _ in enumerate(all_inputs):
     )
 
     results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+    if model_type == "qwenmoe":
+        _cache = model.model.layers[0].mlp.ExpertCache
+        _replayed_slots = sum(
+            m.decode_graph is not None and m.decode_graph.engaged
+            for m in _cache.main_modules)
+        _replayed_shared = sum(
+            layer.mlp._shared_graph is not None and layer.mlp._shared_graph.engaged
+            for layer in model.model.layers)
+        logger.info(
+            "[GPU decode] prompt=%d replayed_slots=%d shared_layers=%d "
+            "peak_allocated=%d peak_reserved=%d",
+            i, _replayed_slots, _replayed_shared,
+            torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
+        if _cache.measure_dma:
+            logger.info("[DMA timing] completed_copies=%d estimate_ms=%.4f",
+                        _cache.measured_dma_copies,
+                        1000 * sum(_cache.LoadTimeOneExpert) / len(_cache.LoadTimeOneExpert))
     logger.warning("results: %s", results)
     print('=' * 20, flush=True)

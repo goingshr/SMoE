@@ -1,0 +1,136 @@
+{
+  "requirements": {
+    "CPU_CORES": "3",
+    "GPU_MEM": "43",
+    "CUDA_VISIBLE_DEVICES": "0",
+    "CONDA_ENV": "Nmoe",
+    "INPUT_NUM": "5",
+    "BATCH_SIZE": "1",
+    "OUTPUT_LEN": "100"
+  },
+  "threshold": 0.16,
+  "code_sha256": {
+    "main.py": "a03dd12d11853388366caab65bee764e397f2b2af6903fa0caf4c44be58778a2",
+    "MoEModule/SMoE_base.py": "2c638ffe18e197eaa86289fa2d91a76b6e02c91df283bd21021dbfac96e3f62b",
+    "MoEModule/qwen_moe.py": "4f8c1a73750e97224031d1c78056f9d03d0994fffcb2e13370b5a51742dbfe3d",
+    "MoEModule/decode_graph.py": "4357f91343e0612b5b7178076d77cabe76491f7dcf35a76afdca872a246852d6",
+    "utils/model_loader.py": "529a3220f78ed08f3ea7dc7e430a1ef794884d8c69c0377ac1c6e05b7eda6a58",
+    "utils/expertcache.py": "f16013de1e14d9f582d84af9aebbde84c73d76cbef3351c7f735effb358dd693",
+    "utils/patcher.py": "8e1ca0b4bdc0780c9820ea00bbac6e37187c07cedec3857ca25225fadd65f83b",
+    "utils/load_dataset.py": "20b4f17612b588ee0b61d51a4e72d4a84cdf9ab0d3c3d11d3ca78f6e0b71345b",
+    "utils/cpu_affinity.py": "20f27de47513a122e026a0ffea883031d8a062f52695813dd4e765ad811a39f7",
+    "utils/cache.py": "e02ef473cebe507f3f4700b3f9a6d7efbba9adeab2d666693723a3e94d094c88",
+    "models/modeling_qwen.py": "3a22c487ef71cb8ece26b9da5f8dd3d2cfd55928e4702a14762e619557f8da25",
+    "configs/qwen2_config.py": "f7c64ee6811d5962342589d6b4bab2e68607d17be3fd7bf8815ee66da0df6c2e",
+    "run.sh": "3de29915acc4741898fc2435f0a63d1d479a987405f9c3a3270e1ff7f096bd5f"
+  },
+  "evidence": [
+    {
+      "run": "final_01",
+      "mean": 0.1459004,
+      "prompts": [
+        [
+          0,
+          0.147758,
+          99
+        ],
+        [
+          1,
+          0.145764,
+          99
+        ],
+        [
+          2,
+          0.143588,
+          99
+        ],
+        [
+          3,
+          0.148519,
+          99
+        ],
+        [
+          4,
+          0.143873,
+          99
+        ]
+      ],
+      "log_sha256": "7904f595ae71e55c83540600fca4df4194147da581fe37e28d95e4ad7ac6cff3",
+      "gpu0_monitor_samples": 41
+    },
+    {
+      "run": "baseline_02",
+      "mean": 0.18506,
+      "prompts": [
+        [
+          0,
+          0.1823,
+          99
+        ],
+        [
+          1,
+          0.1891,
+          99
+        ],
+        [
+          2,
+          0.1838,
+          99
+        ],
+        [
+          3,
+          0.1897,
+          99
+        ],
+        [
+          4,
+          0.1804,
+          99
+        ]
+      ],
+      "log_sha256": "a54f1b5fe43221dc889dc0c6badde3ad80c35a297ced1699e0c6673fd0dc944d",
+      "gpu0_monitor_samples": 40
+    },
+    {
+      "run": "final_02",
+      "mean": 0.144384,
+      "prompts": [
+        [
+          0,
+          0.144169,
+          99
+        ],
+        [
+          1,
+          0.144897,
+          99
+        ],
+        [
+          2,
+          0.14258,
+          99
+        ],
+        [
+          3,
+          0.147586,
+          99
+        ],
+        [
+          4,
+          0.142688,
+          99
+        ]
+      ],
+      "log_sha256": "46a5aa641ed4118924d657cc263d377acb7fdc0deb6f6a97f34c1b30058e39ec",
+      "gpu0_monitor_samples": 41
+    }
+  ],
+  "tests": {
+    "dispatch": "PASS 48 production dispatch/combine cases; exact BF16 outputs",
+    "gate_up": "PASS 16 GPU gate/up cases; max_abs=0.0; rtol=.02 atol=.002",
+    "graph": "PASS 8 replay/slot-replacement cases and prefill fallback; exact BF16; graph_allocated_overhead=8549376",
+    "dma": "PASS full BF16 storage DMA, completed events, estimator drain; durations_s=[0.007825952053070068, 0.002254688024520874, 0.002218303918838501]"
+  },
+  "branch": "CPU_V3",
+  "result": "pass"
+}
