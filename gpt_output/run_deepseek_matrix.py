@@ -142,7 +142,15 @@ def main():
     args.results_dir.mkdir(parents=True, exist_ok=True)
     (args.results_dir / "logs").mkdir(exist_ok=True)
     write_outputs(args.results_dir, pairs)
-    for dataset, cores in pairs:
+    with REFERENCE.open(newline="") as f:
+        reference_rows = list(csv.DictReader(f, delimiter="\t"))
+    # Shorter reference workloads finish first, giving an early complete row
+    # while preserving qwen.csv's original row order in the output matrix.
+    run_order = sorted(pairs, key=lambda pair: float(next(
+        row["mean_total_s"] for row in reference_rows
+        if row["dataset"] == pair[0] and int(row["cpu_cores"]) == pair[1]
+    )))
+    for dataset, cores in run_order:
         if args.only and dataset != args.only:
             continue
         stem = f"deepseekmoe_{dataset}_cpu{cores}"
