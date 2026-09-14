@@ -18,6 +18,7 @@ REFERENCE = Path("/root/SMoE_3060_docs/reference/qwen.csv")
 RESULTS = Path("/root/SMoE_3060_docs/results")
 MODEL = Path("/root/models/parameters/deepseekmoe")
 CONFIG = ROOT / "configs/deepseekmoe_config.json"
+INPUT_NUM = 20
 FIELDS = (
     "dataset", "cpu_cores", "input_num", "output_len", "prefetch",
     "complete", "returncode", "prompt_count", "mean_avg_decode_s",
@@ -39,6 +40,15 @@ def matrix():
         raise ValueError("Expected 24 distinct dataset/core pairs in qwen.csv")
     if {core for _, core in pairs} != {3, 8, 16}:
         raise ValueError("Expected CPU core settings 3, 8, 16")
+    # The repository also supports race_high, which is absent from the Qwen
+    # reference. Include every named dataset while retaining its CSV schema.
+    from utils.load_dataset import _DATASET_MAP
+    for core in (3, 8, 16):
+        for dataset in _DATASET_MAP:
+            if (dataset, core) not in pairs:
+                pairs.append((dataset, core))
+    if len(pairs) != 3 * len(_DATASET_MAP):
+        raise ValueError("Dataset/core matrix does not cover all named datasets")
     return pairs
 
 
@@ -50,7 +60,7 @@ def metrics(dataset, cores, log, returncode):
     config_ok = "'if_prefetch': False" in content
     affinity = next((line.strip() for line in content.splitlines()
                      if line.startswith("[AFFINITY]")), "")
-    complete = returncode == 0 and len(prompt_ids) == 100 and config_ok
+    complete = returncode == 0 and len(prompt_ids) == INPUT_NUM and config_ok
     def mean(values):
         return round(statistics.fmean(values), 9) if values else ""
     decode = [float(row[2]) for row in e2e]
@@ -58,7 +68,7 @@ def metrics(dataset, cores, log, returncode):
     total = [float(row[3]) for row in e2e]
     cpu_ms = [float(row[1]) for row in cpu]
     return {
-        "dataset": dataset, "cpu_cores": cores, "input_num": 100,
+        "dataset": dataset, "cpu_cores": cores, "input_num": INPUT_NUM,
         "output_len": 100, "prefetch": False, "complete": complete,
         "returncode": returncode if returncode is not None else "",
         "prompt_count": len(prompt_ids), "mean_avg_decode_s": mean(decode),
@@ -95,9 +105,11 @@ def write_outputs(outdir, pairs):
         f"Updated: {datetime.now().astimezone().isoformat(timespec='seconds')}",
         f"Revision: `{revision}`", "",
         "Model: `/root/models/parameters/deepseekmoe`; GPU budget: 10 GiB; "
-        "input_num=100; output_len=100; prefetch=False; SMoE environment.",
-        "The 24 dataset/core combinations match `reference/qwen.csv`.", "",
-        f"Completed: {len(finished)}/24; failed: {len(failed)}/24.", "",
+        f"input_num={INPUT_NUM}; output_len=100; prefetch=False; SMoE environment.",
+        "The reference CSV provides eight datasets; race_high is added "
+        "to cover every dataset supported by this repository.", "",
+        f"Completed: {len(finished)}/{len(pairs)}; "
+        f"failed: {len(failed)}/{len(pairs)}.", "",
         "| CPU cores | DeepSeek completed | DeepSeek decode (s/token) | "
         "Qwen reference decode (s/token) | DeepSeek prefill (s) | DeepSeek total (s) |",
         "| ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -109,15 +121,17 @@ def write_outputs(outdir, pairs):
             return f"{statistics.fmean(float(r[key]) for r in group):.6f}" if group else "—"
         qwen_decode = statistics.fmean(float(r["mean_avg_decode_s"])
                                         for r in qwen_group)
-        lines.append(f"| {cores} | {len(group)}/8 | {avg('mean_avg_decode_s')} | "
+        lines.append(f"| {cores} | {len(group)}/{len(pairs)//3} | "
+                     f"{avg('mean_avg_decode_s')} | "
                      f"{qwen_decode:.6f} | {avg('mean_prefill_s')} | "
                      f"{avg('mean_total_s')} |")
-    lines += ["", "Qwen figures come from another machine and are shown only "
-              "as workload context; they are not a same-hardware speed comparison."]
+    lines += ["", "Qwen figures come from another machine and use 100 prompts "
+              "per dataset. They are workload context, not a controlled "
+              "speed comparison."]
     if failed:
         lines += ["", "Failed runs (inspect corresponding raw logs):", ""]
         lines += [f"- {r['dataset']}, {r['cpu_cores']} cores: returncode "
-                  f"{r['returncode']}, {r['prompt_count']}/100 prompts"
+                  f"{r['returncode']}, {r['prompt_count']}/{INPUT_NUM} prompts"
                   for r in failed]
     lines += ["", "Per-run metrics: `deepseek.csv`; raw logs: `logs/`.", ""]
     (outdir / "summary.md").write_text("\n".join(lines))
@@ -146,10 +160,9 @@ def main():
         reference_rows = list(csv.DictReader(f, delimiter="\t"))
     # Shorter reference workloads finish first, giving an early complete row
     # while preserving qwen.csv's original row order in the output matrix.
-    run_order = sorted(pairs, key=lambda pair: float(next(
-        row["mean_total_s"] for row in reference_rows
-        if row["dataset"] == pair[0] and int(row["cpu_cores"]) == pair[1]
-    )))
+    reference_total = {(r["dataset"], int(r["cpu_cores"])):
+                       float(r["mean_total_s"]) for r in reference_rows}
+    run_order = sorted(pairs, key=lambda pair: reference_total.get(pair, float("inf")))
     for dataset, cores in run_order:
         if args.only and dataset != args.only:
             continue
@@ -161,7 +174,7 @@ def main():
             continue
         cmd = [sys.executable, "main.py", "--model_name", "deepseekmoe",
                "--model_path", str(MODEL), "--config_path", str(CONFIG),
-               "--dataset_path", dataset, "--input_num", "100",
+               "--dataset_path", dataset, "--input_num", str(INPUT_NUM),
                "--batch_size", "1", "--output_len", "100",
                "--GPU_mem", "10", "--cpu_cores", str(cores)]
         env = os.environ.copy()
