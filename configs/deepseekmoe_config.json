@@ -36,5 +36,5 @@
   "window_size": null,
   "if_usecpu": true,
   "if_replace": true,
-  "if_prefetch": true
+  "if_prefetch": false
 }

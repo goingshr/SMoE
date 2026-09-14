@@ -223,7 +223,7 @@ def load_00_expert_state_dict(states_dir: str, model_type: str, device: torch.de
     lookup_key = f"model.layers.{first_layer}.mlp.experts.0.gate_proj.weight"
     shard = _load_shard(os.path.join(states_dir, weight_map[lookup_key]), device=str(device))
 
-    if next(iter(shard)).startswith("model."):
+    if _is_original_hf_format(weight_map):
         # Original HF format: strip prefix
         return _extract_expert_dict(shard, first_layer, 0)
     return shard
@@ -289,7 +289,7 @@ class ExpertWrapper(nn.Module):
     ):
         # logger.debug("------")
         # logger.debug(f"Current CPU memory usage: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
-        if self.model_type == "qwenmoe":
+        if self.model_type in {"qwenmoe", "deepseekmoe", "xversemoe"}:
             # Adjacent gate/up weights expose one zero-copy BF16 matrix to the
             # fused CPU projection. GPU slots use the same raw storage layout.
             states = [
@@ -313,8 +313,14 @@ class ExpertWrapper(nn.Module):
             storage_size += x.nbytes
             offsets.append(storage_size)
         if tocpu:
-            pinned_tensor = torch.empty(storage_size, dtype=torch.uint8, device="cpu", pin_memory=True)
-            storage = pinned_tensor.untyped_storage()
+            # Every GPU slot has CPU backing for later eviction. DeepSeek's
+            # full expert set needs pageable memory to use host RAM + swap;
+            # keep pinned transfers for the smaller Qwen/Xverse workloads.
+            cpu_tensor = torch.empty(
+                storage_size, dtype=torch.uint8, device="cpu",
+                pin_memory=self.model_type != "deepseekmoe",
+            )
+            storage = cpu_tensor.untyped_storage()
         else:
             storage = torch.UntypedStorage(storage_size, device=device)
         # logger.debug(f"Current CPU memory usage1: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
@@ -464,6 +470,7 @@ def build_model(
         model_config = XverseConfig.from_pretrained(cfg_path,trust_remote_code=True)
     print("Init GPU memory cost", torch.cuda.memory_summary())
     print("GPU memory allocation for common params ends.")
+    torch.cuda.empty_cache()
     
     offload_size_ = None
     if model_type == "deepseekmoe":

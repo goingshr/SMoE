@@ -28,28 +28,31 @@ MODEL_CONFIGS = {
 DATASET_CONFIGS = {
     "wic": {
         "local_path": os.path.join(DATASET_DIR, "SuperGLUE", "WiC", "val.jsonl"),
-        "hf_dataset": ("super_glue", "wic", "validation"),
+        "hf_dataset": ("aps/super_glue", "wic", "validation"),
         "hf_fields":  {"sentence1": "sentence1", "sentence2": "sentence2", "word": "word"},
     },
     "gsm8k": {
         "local_path": os.path.join(DATASET_DIR, "gsm8k", "train.jsonl"),
-        "hf_dataset": ("gsm8k", "main", "train"),
+        "hf_dataset": ("openai/gsm8k", "main", "train"),
         "hf_fields":  {"question": "question", "answer": "answer"},
     },
     "triviaqa": {
         "local_path": os.path.join(DATASET_DIR, "triviaqa", "triviaqa-train.jsonl"),
-        "hf_dataset": ("trivia_qa", "rc", "train"),
+        # SMoE reads only the question. This train-only file has the same
+        # 138,384 question rows as rc/train, without the unused contexts.
+        "hf_dataset": ("mandarjoshi/trivia_qa", "rc.nocontext", "train"),
+        "hf_file": "rc.nocontext/train-00000-of-00001.parquet",
         "hf_fields":  {"question": "question"},
     },
     "race_middle": {
         "local_path": os.path.join(DATASET_DIR, "race", "validation", "middle.jsonl"),
-        "hf_dataset": ("race", "middle", "validation"),
+        "hf_dataset": ("ehovy/race", "middle", "validation"),
         "hf_fields":  {"article": "article", "question": "question",
                        "options": "options", "answer": "answer"},
     },
     "race_high": {
         "local_path": os.path.join(DATASET_DIR, "race", "validation", "high.jsonl"),
-        "hf_dataset": ("race", "high", "validation"),
+        "hf_dataset": ("ehovy/race", "high", "validation"),
         "hf_fields":  {"article": "article", "question": "question",
                        "options": "options", "answer": "answer"},
     },
@@ -153,12 +156,6 @@ def ensure_model(name: str, user_path: str = "") -> str:
 
 def download_dataset(name: str) -> str:
     """Download the specified dataset to datasets/ and return the local file path."""
-    try:
-        from datasets import load_dataset as hf_load
-    except ImportError:
-        print("ERROR: 'datasets' library not installed. Run: pip install datasets")
-        sys.exit(1)
-
     cfg        = DATASET_CONFIGS[name]
     local_path = cfg["local_path"]
 
@@ -172,6 +169,31 @@ def download_dataset(name: str) -> str:
     save_format = cfg.get("save_format", "jsonl")
 
     print(f"[download] dataset={name}  hf={ds_name}/{ds_config}/{ds_split}  ->  {local_path}")
+    if "hf_file" in cfg:
+        from huggingface_hub import hf_hub_download
+        import pyarrow.parquet as pq
+
+        parquet_path = hf_hub_download(
+            repo_id=ds_name, filename=cfg["hf_file"], repo_type="dataset"
+        )
+        count = 0
+        temp_path = local_path + ".partial"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            parquet = pq.ParquetFile(parquet_path)
+            for batch in parquet.iter_batches(columns=list(fields.values())):
+                for row in batch.to_pylist():
+                    f.write(json.dumps({key: row[value] for key, value in fields.items()}, ensure_ascii=False) + "\n")
+                    count += 1
+        os.replace(temp_path, local_path)
+        print(f"[done] {name}  ({count} train records -> {local_path})")
+        return local_path
+
+    try:
+        from datasets import load_dataset as hf_load
+    except ImportError:
+        print("ERROR: 'datasets' library not installed. Run: pip install datasets")
+        sys.exit(1)
+
     ds = hf_load(ds_name, ds_config, split=ds_split)
 
     if save_format == "gaokao_json":
@@ -197,6 +219,12 @@ def ensure_dataset(keyword: str) -> str:
     auto-download if not present locally, and return the local file path.
     """
     kw = keyword.lower()
+    if kw in DATASET_CONFIGS:
+        cfg = DATASET_CONFIGS[kw]
+        if not _dataset_exists(cfg["local_path"]):
+            print(f"[auto-download] dataset '{keyword}' not found locally, downloading...")
+            download_dataset(kw)
+        return cfg["local_path"]
     for name, cfg in DATASET_CONFIGS.items():
         if kw in name.lower() or kw in cfg["local_path"].lower():
             local_path = cfg["local_path"]

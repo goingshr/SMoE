@@ -10,7 +10,7 @@ DATASET_PATH="${DATASET_PATH:-gaokao_math_ii}"    # Dataset name or path
 INPUT_NUM="${INPUT_NUM:-20}"                   # Number of inference samples
 BATCH_SIZE="${BATCH_SIZE:-1}"                  # Batch size
 OUTPUT_LEN="${OUTPUT_LEN:-100}"                # Max new tokens per prompt
-GPU_MEM="${GPU_MEM:-43}"                       # GPU memory in GB, affects cache_size
+GPU_MEM="${GPU_MEM:-10}"                       # RTX 3060 12 GB: leave room for prompts
 CPU_CORES="${CPU_CORES:-3}"                   # Number of CPU cores allocated to inference
 
 # ── Logging settings ───────────────────────────────────────────────────────────
@@ -59,6 +59,7 @@ fi
 
 # ── Log level (passed to main.py via environment variable) ─────────────────────
 export SMOE_LOG_LEVEL="${LOG_LEVEL}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 # ── Print run info ─────────────────────────────────────────────────────────────
 echo "============================================================"

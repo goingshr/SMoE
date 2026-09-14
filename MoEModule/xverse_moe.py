@@ -27,13 +27,14 @@ from utils.expertcache import (
     replaceset_between_tokens,
 )
 from MoEModule.SMoE_base import AbstractMoELayer
+from MoEModule.fused_gate_up import FusedGateUpMixin
 
 logger = logging.getLogger(__name__)
 
 ExpertUID = Tuple[int, int]
 
 
-class XverseMLP(nn.Module):
+class XverseMLP(FusedGateUpMixin, nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -43,8 +44,12 @@ class XverseMLP(nn.Module):
         self.up_proj   = nn.Linear(self.hidden_size, self.intermediate_size, bias=False, dtype=torch.bfloat16, device=config.device)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False, dtype=torch.bfloat16, device=config.device)
         self.act_fn = ACT2FN[config.hidden_act]
+        self._init_fused_gate_up()
 
     def forward(self, x):
+        fused = self._forward_fused_gate_up(x)
+        if fused is not None:
+            return fused
         if self.config.pretraining_tp > 1:
             slice = self.intermediate_size // self.config.pretraining_tp
             gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)

@@ -21,7 +21,7 @@ parser.add_argument("--dataset_path",  type=str, default='wic')
 parser.add_argument("--batch_size",    type=int, default=1)
 parser.add_argument("--debug",         type=bool, default=False)
 parser.add_argument("--output_len",    type=int, default=100)
-parser.add_argument("--GPU_mem",       type=int, default=24)
+parser.add_argument("--GPU_mem",       type=float, default=10)
 parser.add_argument("--cpu_cores",     type=int, default=16)
 
 args = parser.parse_args()

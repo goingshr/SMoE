@@ -25,6 +25,14 @@ def _ensure_path(keyword: str) -> str:
     If the file does not exist, call download.py to auto-download it.
     """
     kw = keyword.lower()
+    # Resolve named datasets exactly first: gaokao_math_i is a prefix of
+    # gaokao_math_ii, so substring matching alone selects the wrong file.
+    if kw in _DATASET_MAP:
+        full = os.path.join(_DATASET_DIR, _DATASET_MAP[kw])
+        if not os.path.isfile(full):
+            from download import ensure_dataset
+            full = ensure_dataset(kw)
+        return full
     # Match keyword against _DATASET_MAP keys and relative paths
     for name, rel in _DATASET_MAP.items():
         if kw in name or kw in rel.lower():
