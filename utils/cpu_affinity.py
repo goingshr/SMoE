@@ -137,11 +137,29 @@ def select_cpu_placement(total_cores: int, sample_interval: float = 0.2) -> CPUP
     )
 
     if not shared_candidates:
+        # With more logical CPUs requested than physical cores, keep one
+        # physical core for DMA/GPU submission when enough SMT slots remain.
+        # Otherwise a compute worker and the loading thread share execution
+        # resources even though the requested CPU budget permits isolation.
+        if os.environ.get("SMOE_RESERVE_LOAD_CORE", "0") == "1":
+            reservable = [item for item in selected if
+                len(logical) - len(physical_members[(item.package, item.physical_core)])
+                >= compute_count]
+            if reservable:
+                reserved = min(reservable, key=lambda item: (item.utilization, item.cpu))
+                selected.remove(reserved)
+                selected_ids = {item.cpu for item in selected}
+                shared_candidates = [reserved]
+
+    if not shared_candidates:
         # All physical cores are used.  Reserve the least busy unused SMT
         # sibling for loading rather than stealing a compute CPU.
         shared_candidates = [item for item in logical if item.cpu not in selected_ids]
         shared_candidates.sort(key=lambda item: (item.utilization, item.cpu))
     shared = shared_candidates[0]
+    shared_key = (shared.package, shared.physical_core)
+    isolate_shared = (os.environ.get("SMOE_RESERVE_LOAD_CORE", "0") == "1"
+                      and len(logical) - len(physical_members[shared_key]) >= compute_count)
 
     # If the request exceeds the physical-core count, add unused logical CPUs
     # only after reserving the shared worker CPU.
@@ -150,6 +168,7 @@ def select_cpu_placement(total_cores: int, sample_interval: float = 0.2) -> CPUP
             item
             for item in logical
             if item.cpu not in selected_ids and item.cpu != shared.cpu
+            and (not isolate_shared or (item.package, item.physical_core) != shared_key)
         ]
         extras.sort(key=lambda item: (item.utilization, item.cpu))
         selected.extend(extras[: compute_count - len(selected)])

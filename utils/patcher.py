@@ -215,6 +215,10 @@ def _patch_inner_model_forward(inner_model, use_smoe_cache: bool = False):
             ec.prefill_time = prefill_elapsed
             ec.tokens      += 1
             logger.info("[SMoE] prefill_time=%.4f s", prefill_elapsed)
+            # The next forward is decode token 1. Keep its hit-rate counters
+            # separate from the much larger prefill expert population.
+            ec.cache_hits_per_token = 0
+            ec.cache_total_per_token = 0
         else:
             # ── Decode token ─────────────────────────────────────────────
             token_elapsed  = e - s

@@ -16,6 +16,9 @@ class FusedGateUpMixin:
         self._gpu_fuse_gate_up = os.environ.get(
             "SMOE_GPU_BF16_FUSED_GATE_UP", "1"
         ).strip().lower() not in {"0", "false", "off", "no"}
+        # AVX2 hosts can prefer GEMV for one-token BF16 experts. Keep an
+        # explicit gate: CPUs with native BF16/AMX need a separate benchmark.
+        self._cpu_bf16_mv = os.environ.get("SMOE_CPU_BF16_MV", "0") == "1"
 
     def configure_cpu_bf16_gate_up(self, weight: torch.Tensor) -> bool:
         return self._configure_fused_gate_up(weight, "cpu", self._cpu_fuse_gate_up)
@@ -50,5 +53,9 @@ class FusedGateUpMixin:
                   else None)
         if weight is None:
             return None
+        if x.device.type == "cpu" and self._cpu_bf16_mv:
+            gate, up = torch.mv(weight, x.reshape(-1)).split(self.intermediate_size)
+            output = torch.mv(self.down_proj.weight, self.act_fn(gate) * up)
+            return output.reshape(x.shape)
         gate, up = F.linear(x, weight).split(self.intermediate_size, dim=-1)
         return self.down_proj(self.act_fn(gate) * up)

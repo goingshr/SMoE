@@ -32,7 +32,7 @@
   "torch_dtype": "bfloat16",
   "use_cache": true,
   "device": "cuda:0",
-  "replaceScoreRatio": 0.25,
+  "replaceScoreRatio": 0.35,
   "window_size": null,
   "if_usecpu": true,
   "if_replace": true,

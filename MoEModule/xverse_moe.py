@@ -110,6 +110,9 @@ class XverseMoEMLPwithCache(AbstractMoELayer):
         # Xverse normalizes routing weights manually (same as DeepSeek)
         return True
 
+    def get_norm_topk_epsilon(self) -> float:
+        return 1e-6
+
     def compute_shared_expert(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # hidden_states is [T, H] (already flattened in run_with_cache).
         if self.num_shared_experts is not None and self.shared_experts is not None:
@@ -134,12 +137,16 @@ class XverseMoEMLPwithCache(AbstractMoELayer):
     def forward(self, hidden_states, residual_or_cache=None,
                 attn_weights=None, present_key_value=None,
                 attention_mask=None, position_ids=None,
-                output_attentions=False, cache_position=None):
+                output_attentions=False, cache_position=None, *, cache=None):
         """
         Two calling conventions:
           1. Patcher mode: (hidden_states, cache=SMoECache) — attn context from cache
           2. Direct mode:  (hidden_states, residual, attn_weights, present_key_value, ...)
         """
+        if cache is not None:
+            if residual_or_cache is not None:
+                raise TypeError("Pass the SMoE cache only once")
+            residual_or_cache = cache
         from utils.cache import SMoECache
         if isinstance(residual_or_cache, SMoECache):
             cache                 = residual_or_cache

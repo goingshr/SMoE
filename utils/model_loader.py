@@ -23,6 +23,7 @@ from models.modeling_qwen import Qwen2MoeForCausalLM
 # The actual classes are resolved inside build_model() after model_path is known.
 import psutil
 import gc,sys
+import copy
 import numpy as np
 import logging
 
@@ -208,8 +209,18 @@ def make_and_load_expert_wrapper(
         else:
             state_dict.update(shard)
 
-    expert = make_empty_expert(config, model_type)
-    expert.load_state_dict(state_dict, strict=True)
+    if model_type == "deepseekmoe" and os.environ.get("SMOE_HOST_EXPERT_INIT", "1") == "1":
+        # These experts are immediately packed into CPU backing storage.
+        # Construct on meta and attach checkpoint tensors to avoid random
+        # initialization and a full CPU->GPU->CPU weight round trip per expert.
+        host_config = copy.copy(config)
+        host_config.device = "meta"
+        expert = make_empty_expert(host_config, model_type)
+        expert.load_state_dict(state_dict, strict=True, assign=True)
+        expert.config = config
+    else:
+        expert = make_empty_expert(config, model_type)
+        expert.load_state_dict(state_dict, strict=True)
     return ExpertWrapper(expert, model_type, device, tocpu=True)
 
 
@@ -318,7 +329,8 @@ class ExpertWrapper(nn.Module):
             # keep pinned transfers for the smaller Qwen/Xverse workloads.
             cpu_tensor = torch.empty(
                 storage_size, dtype=torch.uint8, device="cpu",
-                pin_memory=self.model_type != "deepseekmoe",
+                pin_memory=(self.model_type != "deepseekmoe"
+                            and torch.cuda.is_available()),
             )
             storage = cpu_tensor.untyped_storage()
         else:
@@ -515,17 +527,6 @@ def build_model(
     def _make_module_cpu_cfg(mp, mt, dev, sd):
         return _make_module_cpu(cfg_path, mt, dev, sd)
 
-    expert_cache = ExpertCache(
-        model_config,
-        make_module_cuda=_make_module_cuda_cfg,
-        make_module_cpu=_make_module_cpu_cfg,
-        main_size=main_size,
-        offload_size=offload_size_,
-        window_size = model_config.window_size,
-        state_dict_00=state_dict_00,
-        model_type = model_type,
-        model_path=model_path
-    )
     if model_type == "deepseekmoe":
         for layer_idx in range(model_config.first_k_dense_replace, model_config.num_hidden_layers):
             model.model.layers[layer_idx].mlp.gate.weight = nn.Parameter(torch.empty((model_config.n_routed_experts, model_config.hidden_size),device = model_config.device,dtype=torch.bfloat16))
@@ -534,7 +535,7 @@ def build_model(
             model.model.layers[layer_idx].mlp.gate = nn.Linear(model_config.hidden_size, model_config.num_experts, bias=False,dtype=torch.bfloat16,device=model_config.device)
     if model_type == "xversemoe":
         for layer_idx in range(0, model_config.num_hidden_layers):
-            model.model.layers[layer_idx].mlp.router = nn.Linear(model_config.hidden_size, model_config.num_experts, bias=False,dtype=torch.bfloat16,device=model_config.device)
+            model.model.layers[layer_idx].mlp.router = nn.Linear(model_config.hidden_size, model_config.num_experts, bias=False,dtype=torch.float,device=model_config.device)
     weight_map = _read_weight_map(model_path)
     original_hf = _is_original_hf_format(weight_map)
 
@@ -557,6 +558,19 @@ def build_model(
     device = next(model.parameters()).device
     logger.info(f"Model is on device: {device}")
     logger.debug("Common params have loaded.")
+    # Load transient checkpoint shards before allocating the complete host
+    # expert backing. On 32 GiB hosts the opposite order causes swap storms.
+    expert_cache = ExpertCache(
+        model_config,
+        make_module_cuda=_make_module_cuda_cfg,
+        make_module_cpu=_make_module_cpu_cfg,
+        main_size=main_size,
+        offload_size=offload_size_,
+        window_size=model_config.window_size,
+        state_dict_00=state_dict_00,
+        model_type=model_type,
+        model_path=model_path,
+    )
     _shard_cache: dict = {} if original_hf else None
     # Replace each layer with the cache-enabled implementation
     if model_type == "deepseekmoe":
@@ -747,4 +761,28 @@ def build_model(
         patch_model_forward(model, model_type)
         logger.info("SMoE inner-model forward patched for %s.", model_type)
 
+    if model_type == "deepseekmoe" and os.environ.get("SMOE_TRIM_HOST_HEAP", "1") == "1":
+        # Checkpoint views and temporary expert packs are dead after loading.
+        # Release glibc's unused arenas before memory-constrained decoding;
+        # this never discards live tensor storage or changes model arithmetic.
+        if _shard_cache is not None:
+            _shard_cache.clear()
+        gc.collect()
+        import ctypes
+        libc = ctypes.CDLL(None)
+        trim = getattr(libc, "malloc_trim", None)
+        if trim is not None:
+            trim.argtypes = [ctypes.c_size_t]
+            trim.restype = ctypes.c_int
+            before = psutil.Process().memory_info().rss
+            released = trim(0)
+            after = psutil.Process().memory_info().rss
+            logger.info("[host heap] malloc_trim=%d rss_before=%d rss_after=%d",
+                        released, before, after)
+
+    if model_type == "deepseekmoe":
+        logger.info("[CPU BF16 ready] experts=%d fused_gate_up=%d",
+                    len(expert_cache.offloaded_storages),
+                    sum(getattr(m, "cpu_bf16_gate_up_fused", False)
+                        for m in expert_cache.offloaded_storages))
     return model

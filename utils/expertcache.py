@@ -110,6 +110,10 @@ class EvictionInfo():
     hits: int = field(default=0)
     misses: int = field(default=0)
     _global_load_counter: int = field(default=0)
+    strict_score_order: bool = field(default_factory=lambda:
+        os.environ.get("SMOE_STRICT_SCORE_ORDER", "0") == "1")
+    layer_cache_floor: int = field(default_factory=lambda:
+        int(os.environ.get("SMOE_LAYER_CACHE_FLOOR", "0")))
 
     def add(self, info: ExpertInfo):
         infos_odict = self.offloaded_infos if info.offloaded else self.main_infos
@@ -153,6 +157,20 @@ class EvictionInfo():
         assert min_prio < 2, "Cache size is too small to support normal system operation."
 
         mask     = (priorities == min_prio)
+        if self.layer_cache_floor > 0:
+            counts = {}
+            for uid, _ in infos:
+                counts[uid[0]] = counts.get(uid[0], 0) + 1
+            above_floor = np.fromiter(
+                (counts[uid[0]] > self.layer_cache_floor for uid, _ in infos),
+                dtype=np.bool_, count=n) & mask
+            if above_floor.any():
+                mask = above_floor
+        if self.strict_score_order:
+            # np.argmin selects the first minimum, so OrderedDict order
+            # breaks exact score ties without overwhelming score differences.
+            averages[~mask] = np.inf
+            return infos[int(np.argmin(averages))][1]
         lru_pos  = np.arange(n, dtype=np.float64)
         combined = averages * (n + 1) + lru_pos
         combined[~mask] = np.inf
@@ -164,6 +182,15 @@ class EvictionInfo():
     def choose_expert_to_evictbyLRU(self):
         min_priority = min(info.priority for info in self.main_infos.values())
         assert min_priority <2, "Cache size is too small to support normal system operation."
+        if self.layer_cache_floor > 0:
+            counts = {}
+            for uid in self.main_infos:
+                counts[uid[0]] = counts.get(uid[0], 0) + 1
+            for uid, info in self.main_infos.items():
+                if info.priority == min_priority and counts[uid[0]] > self.layer_cache_floor:
+                    return info
+            # Soft floor: fall back when all eligible layers are at/below it.
+            # A large prefill can still load every selected expert.
         for uid, info in self.main_infos.items():
             if info.priority == min_priority:
                 return info  # least recently used
@@ -238,6 +265,8 @@ class ExpertCache:
             self.main_modules.append(self._check_module(make_module_cuda(model_path,model_type,config.device,state_dict_00)))
         # logger.debug(f"Current CPU memory usage: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
         self.main_infos = [0 for _ in range(main_size)]
+        self._slot_load_done = [None] * main_size
+        self._slot_compute_done = [None] * main_size
         logger.info(
             "[GPU decode] graph_slots=%d/%d fused_gate_up_slots=%d/%d",
             sum(getattr(m, "decode_graph", None) is not None for m in self.main_modules),
@@ -248,17 +277,28 @@ class ExpertCache:
 
         assert self.module_size is not None
         self.offloaded_storages = []
-        for _ in tqdm(range(offload_size),desc = "init offloading space in CPU memory"):
-            self.offloaded_storages.append(make_module_cpu(model_path,model_type,config.device,state_dict_00))
+        self.lazy_host_backing = (model_type == "deepseekmoe" and
+                                  os.environ.get("SMOE_LAZY_HOST_BACKING", "1") == "1")
+        self._make_host_backing = lambda: make_module_cpu(
+            model_path, model_type, config.device, state_dict_00)
+        if self.lazy_host_backing:
+            # Attach each fully loaded CPU wrapper below instead of filling
+            # 28 GiB with dummy weights, then overwriting it with a second copy.
+            self.offloaded_storages = [None] * offload_size
+            logger.info("[host backing] deferred initialization: %d experts", offload_size)
+        else:
+            for _ in tqdm(range(offload_size),desc = "init offloading space in CPU memory"):
+                self.offloaded_storages.append(self._make_host_backing())
         fused_bf16_experts = sum(
             int(getattr(module, "cpu_bf16_gate_up_fused", False))
             for module in self.offloaded_storages
         )
         logger.info(
-            "[CPU BF16] fused_gate_up=%d/%d "
+            "[CPU BF16] initial_fused_gate_up=%d/%d deferred=%s "
             "(override with SMOE_CPU_BF16_FUSED_GATE_UP=0|1)",
             fused_bf16_experts,
             len(self.offloaded_storages),
+            self.lazy_host_backing,
         )
         # logger.debug(f"Current CPU memory usage: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
         self.offloaded_infos = [0 for _ in range(offload_size)]
@@ -284,11 +324,10 @@ class ExpertCache:
         self.priority_one_set   = set()     # O(1) membership / removal mirror
         self.mtx = threading.Lock()
         self.cv = threading.Condition(self.mtx)
-        # Generation counter: incremented by clear_queue().
-        # loading() thread snapshots this before phase2; if it changed by phase3,
-        # the swap is discarded (eviction is rolled back).  This ensures clear_queue()
-        # can truly abort prefetch loads even after cudaMemcpyAsync was submitted.
+        # Queue generations cancel work before submission. An already submitted
+        # copy still commits its cache metadata; stale callbacks are suppressed.
         self._queue_generation = 0
+        self.active_loads = 0
         self.loading_thread = threading.Thread(target=self.loading,daemon=True)
         self.loading_thread.start()
         self.load_stream = torch.cuda.Stream(device=config.device)
@@ -299,6 +338,8 @@ class ExpertCache:
         self.measure_dma = os.environ.get("SMOE_MEASURE_DMA", "1") == "1"
         self._dma_timings = deque()
         self.measured_dma_copies = 0
+        self.pinned_staging = os.environ.get("SMOE_PINNED_STAGING", "0") == "1"
+        self._staging_ring = None
         logger.info("[DMA timing] whole_transfer_events=%s", self.measure_dma)
         # Initial estimate: ~2ms per expert actual PCIe DMA time (52.5MB @ ~26GB/s effective).
         # Updated after B8, using complete DMA events when measurement is enabled.
@@ -321,6 +362,15 @@ class ExpertCache:
             if uid in self.cache_infos.main_infos and not self.cache_infos.main_infos[uid].offloaded:
                 return True
             return False
+    def select_cached_expert(self, uid: ExpertUID) -> bool:
+        """Record a real GPU expert hit for LRU eviction, not a router probe."""
+        with self.mtx:
+            info = self.cache_infos.main_infos.get(uid)
+            if info is None or info.offloaded:
+                return False
+            self.cache_infos.mark_used(info)
+            info.access_count += 1
+            return True
     def query_expert_inload(self,uid: ExpertUID):
         if uid in self.cache_infos.main_infos and not self.cache_infos.main_infos[uid].offloaded:
             return True
@@ -329,9 +379,9 @@ class ExpertCache:
         # with self.mtx:
         assert self.module_type is not None
         assert isinstance(module, self.module_type)
-        return self.add_expert_storage(uid, module.storage, offload=offload)
+        return self.add_expert_storage(uid, module.storage, offload=offload, _module=module)
 
-    def add_expert_storage(self, uid: ExpertUID, storage: torch.UntypedStorage, offload: Optional[bool] = None):
+    def add_expert_storage(self, uid: ExpertUID, storage: torch.UntypedStorage, offload: Optional[bool] = None, _module=None):
         assert uid not in self.registered_experts, f"expert {uid} already registered"
         assert isinstance(storage, torch.UntypedStorage)
         assert len(storage) == self.module_size
@@ -350,7 +400,14 @@ class ExpertCache:
                     break
         for i in range(len(self.offloaded_storages)):
             if self.offloaded_infos[i] == 0:
-                self.offloaded_storages[i].storage.copy_(storage)
+                if self.offloaded_storages[i] is None:
+                    if _module is not None and storage.device.type == "cpu":
+                        self.offloaded_storages[i] = _module
+                    else:
+                        self.offloaded_storages[i] = self._make_host_backing()
+                        self.offloaded_storages[i].storage.copy_(storage)
+                else:
+                    self.offloaded_storages[i].storage.copy_(storage)
                 if offload:
                     info = ExpertInfo(uid, True, 0,False,scores = FixedSizeQueueForScore(self.cache_window),index=i,offload_index=i)
                     self.registered_experts[uid] = info
@@ -363,31 +420,35 @@ class ExpertCache:
 
 
     def _swap(self, info_to_load_index, info_to_evict_index):
-        """Submit PCIe HtoD copy on load_stream via cudaMemcpyAsync (truly non-blocking).
+        """Submit an expert copy and return its stream-completion event.
 
-        Uses libcudart.cudaMemcpyAsync directly so the CPU returns immediately after
-        dispatching the DMA — no synchronize() in the loading thread.
-
-        Returns a CUDA Event recorded on load_stream after the copy is submitted.
-        compute_stream.wait_event(copy_done_event) in the callback will stall the GPU
-        until the DMA finishes, without ever blocking the CPU.
-
-        This means:
-          - Loading thread: dispatches copy + records event + fires callback in ~0.5ms total
-          - Main thread: can run B8/B9/B10 etc. completely unblocked by PCIe
-          - GPU compute_stream: waits for copy_done_event before reading expert weights
-            (GPU-level fence, zero CPU stall)
+        Pageable CUDA copies may block the loader while the runtime stages
+        host bytes. Optional bounded pinned staging copies with libc memmove,
+        overlapping the next host copy with the previous buffer's DMA. A ring
+        slot is fenced before reuse; the main CPU expert worker stays separate.
         """
-        start = time.time()
         dst_ptr = self.main_modules[info_to_evict_index].storage.data_ptr()
         src_ptr = self.offloaded_storages[info_to_load_index].storage.data_ptr()
         nbytes  = self.offloaded_storages[info_to_load_index].storage.nbytes()
         stream_handle = self.load_stream.cuda_stream
+        compute_done = self._slot_compute_done[info_to_evict_index]
+        if compute_done is not None:
+            self.load_stream.wait_event(compute_done)
 
         copy_start_event = None
         if self.measure_dma:
             copy_start_event = torch.cuda.Event(enable_timing=True)
             copy_start_event.record(self.load_stream)
+
+        staging_index = None
+        if self.pinned_staging:
+            if self._staging_ring is None:
+                from utils.pinned_staging import PinnedStagingRing
+                self._staging_ring = PinnedStagingRing(nbytes)
+                logger.info("[expert staging] slots=2 host_bytes=%d", 2 * nbytes)
+            staging_index, staged = self._staging_ring.stage(
+                self.offloaded_storages[info_to_load_index].storage)
+            src_ptr = staged.data_ptr()
 
         if _CUDART_AVAILABLE:
             err = _cudaMemcpyAsync(
@@ -412,6 +473,9 @@ class ExpertCache:
         # compute_stream.wait_event(copy_done_event) will stall the GPU — not the CPU.
         copy_done_event = torch.cuda.Event(enable_timing=self.measure_dma)
         copy_done_event.record(self.load_stream)
+        self._slot_load_done[info_to_evict_index] = copy_done_event
+        if staging_index is not None:
+            self._staging_ring.release_after(staging_index, copy_done_event)
         if copy_start_event is not None:
             self._dma_timings.append((copy_start_event, copy_done_event))
 
@@ -425,14 +489,15 @@ class ExpertCache:
     def consume_dma_timings(self):
         """Update the balancer from complete DMA spans after the B8 drain.
 
-        B8 host wait measures only the tail left *after* CPU expert work, so
-        it is not the cost of loading an expert. Events measure the entire
-        transfer on its actual stream, without adding another synchronization.
-        The loader appends before popping its queue item; the caller has
-        waited for both an empty queue and load_stream completion.
+        B8 host wait measures only the tail left after CPU work. Stream events
+        capture completed transfer spans instead. With early prefetch, future
+        copies may remain pending, so consume only the completed prefix.
         """
         while self._dma_timings:
-            begin, end = self._dma_timings.popleft()
+            begin, end = self._dma_timings[0]
+            if not end.query():
+                break  # A speculative next-layer copy can still be in flight.
+            self._dma_timings.popleft()
             self.LoadTimeOneExpert.append(begin.elapsed_time(end) / 1000.0)
             self.measured_dma_copies += 1
         self.LoadTimeOneExpert = self.LoadTimeOneExpert[-10:]
@@ -441,10 +506,31 @@ class ExpertCache:
         with self.mtx:
             info = self.registered_experts[uid]
             if not offload:
-                # logger.debug("self.main_modules[info.index]",uid,info.index)
-                return self.main_modules[info.index]
+                module = self.main_modules[info.index]
+                ready = self._slot_load_done[info.index]
             else:
                 return self.offloaded_storages[info.offload_index]
+        # Prefetch metadata can become visible before its asynchronous DMA
+        # completes. Order the consuming GPU stream after that exact copy.
+        if ready is not None and not ready.query():
+            torch.cuda.current_stream(self.device).wait_event(ready)
+        return module
+
+    def record_expert_use(self, uids, stream):
+        """Fence weight-slot reuse after all current expert reads are queued."""
+        done = torch.cuda.Event()
+        done.record(stream)
+        with self.mtx:
+            for uid in uids:
+                info = self.registered_experts[uid]
+                self._slot_compute_done[info.index] = done
+
+    def wait_until_experts_loaded(self, uids):
+        """Wait for demand submission, leaving speculative DMA asynchronous."""
+        with self.cv:
+            self.cv.wait_for(lambda: all(
+                not self.registered_experts[uid].offloaded
+                and not self.registered_experts[uid].loading for uid in uids))
 
     def ready_compute(self, uid: ExpertUID):
         self.registered_experts[uid].priority = 2
@@ -570,6 +656,7 @@ class ExpertCache:
                 self.registered_experts[info_to_evict.uid].offloaded = True
                 evictindex = info_to_evict.index
                 loadindex  = info_to_load.offload_index
+                self.active_loads += 1
                 # gen_snapshot is still valid (we just confirmed it above)
 
             # ── phase 3: async PCIe copy (outside lock) ──────────────────────────
@@ -585,6 +672,7 @@ class ExpertCache:
                 self.registered_experts[uid].loading = False
                 self.registered_experts[uid].offloaded = False
                 self.cache_infos.swap(info_to_load, info_to_evict)
+                self.active_loads -= 1
 
                 # Only fire callback if clear_queue() was NOT called after our snapshot.
                 # If generation changed, the layer that requested this prefetch is gone;
@@ -632,7 +720,8 @@ class ExpertCache:
 
     def wait_until_queue_empty(self):
         with self.cv:
-            self.cv.wait_for(lambda: len(self.load_queue) == 0 and self.pending_callbacks == 0)
+            self.cv.wait_for(lambda: len(self.load_queue) == 0
+                             and self.pending_callbacks == 0 and self.active_loads == 0)
 def replaceset_between_tokens(scores:list,a:float,topk,return_sorted=False):
     replaceset = set()
     allset = set()
@@ -768,6 +857,22 @@ def CPU_load_management(uid_batch, cpucost, loadcost, prefetch_pcie_budget=0.0):
             all_cpucost += cpucost
 
     return loadlst, cpulst
+
+
+def CPU_load_management_decode(uid_batch, cpucost, loadcost):
+    """Minimize predicted completion time for equal-sized one-token experts.
+
+    Unlike current-load greedy assignment, include the cost of the next job.
+    There are at most top_k+1 CPU/GPU counts to examine. Ties use less DMA.
+    Prefill batches keep the existing policy because their CPU costs differ.
+    """
+    if any(batch != 1 for batch in uid_batch.values()):
+        return CPU_load_management(uid_batch, cpucost, loadcost)
+    uids = list(uid_batch)
+    n = len(uids)
+    cpu_count = min(range(n + 1), key=lambda c: (
+        max(c * cpucost, (n - c) * loadcost), n - c))
+    return uids[cpu_count:], uids[:cpu_count]
 
             
 import numpy as np

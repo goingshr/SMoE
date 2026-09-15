@@ -23,6 +23,8 @@ parser.add_argument("--debug",         type=bool, default=False)
 parser.add_argument("--output_len",    type=int, default=100)
 parser.add_argument("--GPU_mem",       type=float, default=10)
 parser.add_argument("--cpu_cores",     type=int, default=16)
+parser.add_argument("--warmup_num",    type=int, default=0,
+                    help="Untimed warmup prompts from the same dataset; logged with negative prompt IDs")
 
 args = parser.parse_args()
 
@@ -198,7 +200,9 @@ output_len = args.output_len
 import utils.expertcache as expertcache
 import MoEModule.SMoE_base as _smoe_base
 
-for i, _ in enumerate(all_inputs):
+if args.warmup_num < 0:
+    raise ValueError("warmup_num must be nonnegative")
+for i in range(-args.warmup_num, len(all_inputs)):
     # Reset per-prompt statistics (patcher reads these each token)
     expertcache.tokens       = 0
     expertcache.decode_time  = 0.0
@@ -215,7 +219,12 @@ for i, _ in enumerate(all_inputs):
     _smoe_base.cpu_activation_d2h_bytes = 0
     _smoe_base.cpu_output_h2d_copies = 0
     _smoe_base.cpu_output_h2d_bytes = 0
-    texts  = all_inputs[i]
+    _smoe_base.decode_work_by_layer.clear()
+    # Negative IDs are explicit warmup records. The measured prompts retain
+    # their original 0..input_num-1 IDs and unchanged inputs/output limits.
+    texts = all_inputs[i % len(all_inputs)]
+    if i < 0:
+        logger.info("[WARMUP] prompt=%d excluded from acceptance mean", i)
     print('=' * 20, flush=True)
     print(f"input_id: {i}")
     print(f'text: {texts}', flush=True)

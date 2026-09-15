@@ -8,6 +8,7 @@ Provides:
 
 import time
 import logging
+import os
 
 import torch
 import torch.nn.functional as F
@@ -80,6 +81,9 @@ class DeepseekMoEwithCache(AbstractMoELayer):
 
         self.router         = gate           # nn.Parameter (raw weight)
         self.shared_experts = shared_experts
+        self._prefetch_score_order = os.environ.get("SMOE_PREFETCH_SCORE_ORDER", "0") == "1"
+        self._prefetch_fused_norms = os.environ.get("SMOE_PREFETCH_FUSED_NORMS", "0") == "1"
+        self._prefetch_fused_logged = False
 
         # Next-layer modules for prefetch prediction
         self.next_attention                = next_attention
@@ -107,9 +111,13 @@ class DeepseekMoEwithCache(AbstractMoELayer):
         return self.top_k
 
     def get_norm_topk_prob(self) -> bool:
-        # DeepSeek normalizes routing weights manually in forward()
-        # run_with_cache will normalize if this returns True
-        return True
+        # Match MoEGate.forward: some DeepSeek checkpoints deliberately leave
+        # the selected softmax mass below one (the supplied config uses False).
+        return self.config.norm_topk_prob
+
+    def get_router_softmax_dtype(self):
+        # The checkpoint's MoEGate.forward keeps the logits dtype.
+        return None
 
     def compute_shared_expert(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # hidden_states is [T, H] (already flattened in run_with_cache).
@@ -159,19 +167,31 @@ class DeepseekMoEwithCache(AbstractMoELayer):
 
     @torch.no_grad()
     def get_next_top_expert(self, residual_cur, hidden_states, raw_hidden, bsh):
-        h = raw_hidden + hidden_states   # approx MoE output
-        h = h.reshape(*bsh)
-        if residual_cur is not None:
-            h = residual_cur + h         # residual add
+        h = None
+        if self._prefetch_fused_norms and bsh[0] * bsh[1] == 1:
+            from utils.prefetch_norm import fused_prefetch_norms
+            h = fused_prefetch_norms(raw_hidden, hidden_states, residual_cur,
+                                    self.next_input_layernorm, self.next_post_attention_layernorm)
+            if h is not None and not self._prefetch_fused_logged:
+                logger.info("[prefetch fused norms] layer=%d engaged", self.layerid)
+                self._prefetch_fused_logged = True
+        if h is None:
+            h = raw_hidden + hidden_states   # approx MoE output
+            h = h.reshape(*bsh)
+            if residual_cur is not None:
+                h = residual_cur + h         # residual add
 
-        next_residual = h
-        h = self.next_input_layernorm(h)
-        h = h + next_residual            # skip attention
-        h = self.next_post_attention_layernorm(h)
+            next_residual = h
+            h = self.next_input_layernorm(h)
+            h = h + next_residual            # skip attention
+            h = self.next_post_attention_layernorm(h)
 
         batch_size, sequence_length, hidden_dim = bsh
         logits = F.linear(h.view(-1, hidden_dim), self.next_gate_weight, None)
         scores = logits.softmax(dim=-1)
+        scores_list = scores.tolist()
         top_experts, _ = replaceset_between_tokens(
-            scores.tolist(), self.replaceScoreRatio, self.top_k)
+            scores_list, self.replaceScoreRatio, self.top_k)
+        if self._prefetch_score_order and batch_size * sequence_length == 1:
+            top_experts.sort(key=lambda eid: scores_list[0][eid], reverse=True)
         return top_experts

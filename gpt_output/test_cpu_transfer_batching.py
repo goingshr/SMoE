@@ -5,9 +5,6 @@ from types import SimpleNamespace
 from pathlib import Path
 import sys
 
-from gpu_process_gate import require_process_free_gpus
-
-require_process_free_gpus()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
@@ -45,6 +42,8 @@ class CpuComputeHarness:
         self.ExpertCache = FakeCache(experts)
         self.config = SimpleNamespace(device="cpu")
         self._batch_cpu_transfers = batched
+        self._staged_decode_input = None
+        self._decode_minmax = False
         self.CPUComputeTimeOneExpertOneBatch = [0.05]
 
 
