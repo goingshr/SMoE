@@ -131,8 +131,24 @@ for cores in a.cores:
             pattern.findall(content)]
     from gpt_output.optimization_3080.benchmark_metrics import parse_prompt_hits
     prompt_hits = parse_prompt_hits(content)
+    cpu_call_pattern = re.compile(
+        r'\[CPU expert calls\] prompt=(-?\d+) count=(\d+) total_ms=([\d.]+) mean_ms=([\d.]+) '
+        r'p50_ms=([\d.]+) p95_ms=([\d.]+) per_decode_token_ms=([\d.]+)')
+    cpu_call_rows = {int(i): dict(cpu_expert_forward_calls=int(n),
+        cpu_expert_forward_total_ms=float(total), cpu_expert_forward_mean_ms=float(mean),
+        cpu_expert_forward_p50_ms=float(p50), cpu_expert_forward_p95_ms=float(p95),
+        cpu_expert_forward_ms_per_decode_token=float(per_token))
+        for i, n, total, mean, p50, p95, per_token in cpu_call_pattern.findall(content)}
+    cpu_stages = {int(i): dict(cpu_forward_scope=scope,cpu_stage_total_ms=float(total),
+        cpu_batch_boundary_total_ms=float(batch)) for i,scope,total,batch in re.findall(
+        r'\[CPU stage\] prompt=(-?\d+) scope=(\w+) total_ms=([\d.]+) batch_boundary_ms=([\d.]+)',content)}
+    balance_costs={int(i): dict(cpu_avg_estimate_ms=float(cpu),pcie_load_estimate_ms=float(dma))
+        for i,cpu,dma in re.findall(r'\[Balance costs\] prompt=(-?\d+) cpu_avg_ms=([\d.]+) pcie_load_ms=([\d.]+)',content)}
     for row in rows:
+        row.update(balance_costs.get(row['prompt'], {}))
+        row.update(cpu_stages.get(row['prompt'], {}))
         row.update(prompt_hits[row['prompt']])
+        row.update(cpu_call_rows.get(row['prompt'], {}))
         row['warmup'] = row['prompt'] < 0
     measured = [r for r in rows if r['prompt'] >= 0]
     complete = (rc_path.exists() and rc_path.read_text().strip() == '0'
@@ -160,6 +176,21 @@ for cores in a.cores:
                       if r['decode_tokens'] > 0) if measured else None,
                   excluded_prompts=[])
     result['gpu_cache_hits'] = sum(r['gpu_cache_hits'] for r in measured)
+    if measured and all('cpu_expert_forward_calls' in r for r in measured):
+        count = sum(r['cpu_expert_forward_calls'] for r in measured)
+        total_ms = sum(r['cpu_expert_forward_total_ms'] for r in measured)
+        tokens = sum(r['decode_tokens'] for r in measured)
+        result.update(cpu_expert_forward_calls=count, cpu_expert_forward_total_ms=total_ms,
+            cpu_expert_forward_mean_ms=total_ms/count if count else 0.,
+            cpu_expert_forward_ms_per_decode_token=total_ms/tokens if tokens else 0.,
+            cpu_experts_per_decode_token=count/tokens if tokens else 0.)
+    if measured and all('cpu_stage_total_ms' in r for r in measured):
+        result['cpu_forward_scope']=measured[0]['cpu_forward_scope']
+        for key in ('cpu_stage','cpu_batch_boundary'):
+            result[key+'_ms_per_decode_token']=sum(r[key+'_total_ms'] for r in measured)/sum(r['decode_tokens'] for r in measured)
+    if measured and all('cpu_avg_estimate_ms' in r for r in measured):
+        for key in ('cpu_avg_estimate_ms','pcie_load_estimate_ms'):
+            result[key]=sum(r[key]*r['decode_tokens'] for r in measured)/sum(r['decode_tokens'] for r in measured)
     result['routed_expert_calls'] = sum(r['routed_expert_calls'] for r in measured)
     result['gpu_cache_hit_rate'] = (result['gpu_cache_hits'] / result['routed_expert_calls']
                                   if result['routed_expert_calls'] else None)
@@ -182,8 +213,16 @@ for cores in a.cores:
         result['omp_wait_policy'] = run_env.get('OMP_WAIT_POLICY', 'unset')
         for column, variable in {
             'cpu_bf16_mv': 'SMOE_CPU_BF16_MV',
+            'cpu_avx2_gemv': 'SMOE_CPU_AVX2_GEMV',
+            'cpu_batch_forward': 'SMOE_CPU_BATCH_FORWARD',
+            'gpu_inline_submit': 'SMOE_GPU_INLINE_SUBMIT',
+            'gpu_triton_expert': 'SMOE_GPU_TRITON_EXPERT',
+            'gpu_grouped_triton': 'SMOE_GPU_GROUPED_TRITON',
+            'triton_decode_norm': 'SMOE_TRITON_NORM',
+            'triton_decode_rope': 'SMOE_TRITON_ROPE',
             'cpu_only_misses': 'SMOE_DECODE_CPU_ONLY',
             'decode_minmax': 'SMOE_DECODE_MINMAX',
+            'decode_cost_samples': 'SMOE_DECODE_COST_SAMPLES',
             'load_high_score': 'SMOE_LOAD_HIGH_SCORE',
             'reserve_load_core': 'SMOE_RESERVE_LOAD_CORE',
             'strict_score_order': 'SMOE_STRICT_SCORE_ORDER',
@@ -194,6 +233,7 @@ for cores in a.cores:
             'prefetch_fused_norms': 'SMOE_PREFETCH_FUSED_NORMS',
         }.items():
             result[column] = run_env.get(variable, '0') == '1'
+        result['decode_load_limit'] = int(run_env.get('SMOE_DECODE_LOAD_LIMIT','0'))
         result['layer_cache_floor'] = int(run_env.get('SMOE_LAYER_CACHE_FLOOR', '0'))
     if generation_path.exists():
         generations = json.loads(generation_path.read_text())

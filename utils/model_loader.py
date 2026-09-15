@@ -785,4 +785,12 @@ def build_model(
                     len(expert_cache.offloaded_storages),
                     sum(getattr(m, "cpu_bf16_gate_up_fused", False)
                         for m in expert_cache.offloaded_storages))
+        if os.environ.get("SMOE_TRITON_NORM", "0") == "1":
+            from utils import decode_norm
+            decode_norm.enabled = True
+            decode_norm.install(model)
+        if os.environ.get("SMOE_TRITON_ROPE", "0") == "1":
+            from utils import decode_rope
+            decode_rope.enabled = True
+            decode_rope.install(model)
     return model

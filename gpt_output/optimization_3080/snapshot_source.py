@@ -10,6 +10,7 @@ def snapshot(root, outdir):
     files = [root / 'main.py']
     for directory in ('MoEModule', 'utils', 'gpt_output'):
         files.extend((root / directory).rglob('*.py'))
+        files.extend((root / directory).rglob('*.cpp'))
     hashes = {}
     for source in sorted(set(files)):
         relative = source.relative_to(root)

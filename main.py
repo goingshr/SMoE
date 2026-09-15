@@ -220,6 +220,10 @@ for i in range(-args.warmup_num, len(all_inputs)):
     _smoe_base.cpu_output_h2d_copies = 0
     _smoe_base.cpu_output_h2d_bytes = 0
     _smoe_base.decode_work_by_layer.clear()
+    _smoe_base.decode_balance_by_layer.clear()
+    _smoe_base.cpu_decode_forward_ms.clear()
+    _smoe_base.cpu_decode_stage_ms.clear()
+    _smoe_base.cpu_batch_forward_boundary_ms.clear()
     # Negative IDs are explicit warmup records. The measured prompts retain
     # their original 0..input_num-1 IDs and unchanged inputs/output limits.
     texts = all_inputs[i % len(all_inputs)]
@@ -267,6 +271,23 @@ for i in range(-args.warmup_num, len(all_inputs)):
 
     # Print prompt-level totals here.
     decode_tokens   = expertcache.tokens - 1   # subtract 1 for prefill token
+    _cpu_calls = _smoe_base.cpu_decode_forward_ms
+    logger.info(
+        "[CPU expert calls] prompt=%d count=%d total_ms=%.6f mean_ms=%.6f "
+        "p50_ms=%.6f p95_ms=%.6f per_decode_token_ms=%.6f",
+        i, len(_cpu_calls), sum(_cpu_calls),
+        float(numpy.mean(_cpu_calls)) if _cpu_calls else 0.,
+        float(numpy.median(_cpu_calls)) if _cpu_calls else 0.,
+        float(numpy.percentile(_cpu_calls, 95)) if _cpu_calls else 0.,
+        sum(_cpu_calls) / decode_tokens if decode_tokens > 0 else 0.)
+    logger.info("[CPU stage] prompt=%d scope=%s total_ms=%.6f batch_boundary_ms=%.6f",
+        i, "native_aten_forward" if _smoe_base.cpu_batch_forward_boundary_ms else "python_expert_forward",
+        sum(_smoe_base.cpu_decode_stage_ms), sum(_smoe_base.cpu_batch_forward_boundary_ms))
+    _balance=list(_smoe_base.decode_balance_by_layer.values())
+    if _balance:
+        _decisions=sum(v[0] for v in _balance)
+        logger.info("[Balance costs] prompt=%d cpu_avg_ms=%.6f pcie_load_ms=%.6f",
+            i,sum(v[1] for v in _balance)/_decisions,sum(v[2] for v in _balance)/_decisions)
     avg_decode_time = (expertcache.decode_time / decode_tokens
                        if decode_tokens > 0 else float('nan'))
     logger.info("[SMoE] prompt=%d  prefill=%.4f s  avg_decode=%.6f s  "

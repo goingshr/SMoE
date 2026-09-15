@@ -346,6 +346,9 @@ class ExpertCache:
         # DO NOT use _swap() wall time here — that only measures DMA submission (~0.2ms),
         # not DMA completion. The balancer needs completion time to compare with cpucost.
         self.LoadTimeOneExpert = [0.002]
+        self.DecodeLoadTimeOneExpert = []
+        self.decode_load_sample_age = 0
+        self.decode_probe_count = 0
     def _check_module(self, module: nn.Module):
         assert isinstance(module.storage, torch.UntypedStorage)
         if self.module_type is None:
@@ -427,6 +430,7 @@ class ExpertCache:
         overlapping the next host copy with the previous buffer's DMA. A ring
         slot is fenced before reuse; the main CPU expert worker stays separate.
         """
+        is_decode_copy = tokens > 0
         dst_ptr = self.main_modules[info_to_evict_index].storage.data_ptr()
         src_ptr = self.offloaded_storages[info_to_load_index].storage.data_ptr()
         nbytes  = self.offloaded_storages[info_to_load_index].storage.nbytes()
@@ -477,7 +481,7 @@ class ExpertCache:
         if staging_index is not None:
             self._staging_ring.release_after(staging_index, copy_done_event)
         if copy_start_event is not None:
-            self._dma_timings.append((copy_start_event, copy_done_event))
+            self._dma_timings.append((copy_start_event, copy_done_event, is_decode_copy))
 
         # NOTE: do NOT update LoadTimeOneExpert here — elapsed only measures
         # cudaMemcpyAsync submission time (~0.2ms), not DMA completion.
@@ -494,11 +498,16 @@ class ExpertCache:
         copies may remain pending, so consume only the completed prefix.
         """
         while self._dma_timings:
-            begin, end = self._dma_timings[0]
+            begin, end, is_decode = self._dma_timings[0]
             if not end.query():
                 break  # A speculative next-layer copy can still be in flight.
             self._dma_timings.popleft()
-            self.LoadTimeOneExpert.append(begin.elapsed_time(end) / 1000.0)
+            elapsed = begin.elapsed_time(end) / 1000.0
+            self.LoadTimeOneExpert.append(elapsed)
+            if is_decode:
+                self.DecodeLoadTimeOneExpert.append(elapsed)
+                self.DecodeLoadTimeOneExpert = self.DecodeLoadTimeOneExpert[-10:]
+                self.decode_load_sample_age = 0
             self.measured_dma_copies += 1
         self.LoadTimeOneExpert = self.LoadTimeOneExpert[-10:]
 

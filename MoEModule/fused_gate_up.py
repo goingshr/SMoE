@@ -5,9 +5,18 @@ import os
 import torch
 import torch.nn.functional as F
 
+CPU_AVX2_GEMV = os.environ.get("SMOE_CPU_AVX2_GEMV", "0") == "1"
+GPU_TRITON_EXPERT = os.environ.get("SMOE_GPU_TRITON_EXPERT", "0") == "1"
+_avx2_gemv = None
+
 
 class FusedGateUpMixin:
     def _init_fused_gate_up(self):
+        global _avx2_gemv
+        if CPU_AVX2_GEMV and _avx2_gemv is None:
+            from utils.cpu_bf16_kernel import load_kernel
+            _avx2_gemv = load_kernel()
+            print("[CPU AVX2 GEMV] loaded: BF16 storage, FP32 accumulation", flush=True)
         self._cpu_gate_up_weight = None
         self._gpu_gate_up_weight = None
         self._cpu_fuse_gate_up = os.environ.get(
@@ -53,6 +62,17 @@ class FusedGateUpMixin:
                   else None)
         if weight is None:
             return None
+        if (x.device.type == "cpu" and CPU_AVX2_GEMV
+                and x.dtype == torch.bfloat16 and x.is_contiguous()
+                and self.down_proj.weight.is_contiguous()):
+            gate, up = _avx2_gemv(weight, x.reshape(-1)).split(self.intermediate_size)
+            output = _avx2_gemv(self.down_proj.weight, self.act_fn(gate) * up)
+            return output.reshape(x.shape)
+        if (x.device.type == "cuda" and GPU_TRITON_EXPERT
+                and self.config.hidden_act == "silu" and x.is_contiguous()
+                and x.dtype == torch.bfloat16):
+            from utils.triton_bf16_expert import bf16_expert
+            return bf16_expert(x, weight, self.down_proj.weight)
         if x.device.type == "cpu" and self._cpu_bf16_mv:
             gate, up = torch.mv(weight, x.reshape(-1)).split(self.intermediate_size)
             output = torch.mv(self.down_proj.weight, self.act_fn(gate) * up)
