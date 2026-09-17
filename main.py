@@ -25,8 +25,11 @@ parser.add_argument("--debug",         type=bool, default=False)
 parser.add_argument("--output_len",    type=int, default=100)
 parser.add_argument("--GPU_mem",       type=float, default=10)
 parser.add_argument("--cpu_cores",     type=int, default=16)
+parser.add_argument("--seed",          type=int, default=37)
 
 args = parser.parse_args()
+torch.manual_seed(args.seed)
+numpy.random.seed(args.seed)
 
 if args.input_num < 1:
     parser.error("--input_num must be at least 1")
@@ -209,11 +212,15 @@ output_len = args.output_len
 
 import utils.expertcache as expertcache
 import MoEModule.SMoE_base as _smoe_base
+from utils import decode_metrics
 
 _measured_records = []
 for i, _ in enumerate(all_inputs):
     _phase = "warmup" if i < args.warmup_num else "measure"
+    decode_metrics.reset()
     _sample_id = i if _phase == "warmup" else i - args.warmup_num
+    # Sampling is reproducible independently of model construction and warmup.
+    torch.manual_seed(args.seed + i)
     # Reset per-prompt statistics (patcher reads these each token)
     expertcache.tokens       = 0
     expertcache.decode_time  = 0.0
@@ -303,6 +310,14 @@ for i, _ in enumerate(all_inputs):
         i, _gpu_hit_rate, expertcache.cache_hits_prompt,
         expertcache.cache_total_prompt,
     )
+    if decode_metrics.enabled:
+        # Drain possible final-layer prefetch before resolving event samples.
+        _cache_metrics = model.model.layers[0].mlp.ExpertCache
+        _cache_metrics.wait_until_queue_empty()
+        _cache_metrics.load_stream.synchronize()
+        _cache_metrics.consume_dma_timings()
+        logger.info('[Decode metrics] prompt=%d %s', i,
+                    _json.dumps(decode_metrics.summary(decode_tokens), sort_keys=True))
     logger.info(
         "[CPU transfer] prompt=%d activation_d2h=%d/%dB output_h2d=%d/%dB",
         i,

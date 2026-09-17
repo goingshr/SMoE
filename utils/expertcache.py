@@ -12,6 +12,7 @@ import torch.profiler
 import numpy as np
 import scipy.stats as stats
 import ctypes
+from utils import decode_metrics
 
 # ---------------------------------------------------------------------------
 # Truly async PCIe HtoD via cudaMemcpyAsync
@@ -301,6 +302,8 @@ class ExpertCache:
         self.on_expert_loaded = None
         self.pending_callbacks = 0
         self.measure_dma = os.environ.get("SMOE_MEASURE_DMA", "1") == "1"
+        if decode_metrics.enabled and not self.measure_dma:
+            raise ValueError('SMOE_DECODE_METRICS requires SMOE_MEASURE_DMA=1')
         self._dma_timings = deque()
         self.measured_dma_copies = 0
         logger.info("[DMA timing] whole_transfer_events=%s", self.measure_dma)
@@ -487,7 +490,7 @@ class ExpertCache:
         copy_done_event = torch.cuda.Event(enable_timing=self.measure_dma)
         copy_done_event.record(self.load_stream)
         if copy_start_event is not None:
-            self._dma_timings.append((copy_start_event, copy_done_event))
+            self._dma_timings.append((copy_start_event, copy_done_event, tokens))
 
         # NOTE: do NOT update LoadTimeOneExpert here — elapsed only measures
         # cudaMemcpyAsync submission time (~0.2ms), not DMA completion.
@@ -506,8 +509,11 @@ class ExpertCache:
         waited for both an empty queue and load_stream completion.
         """
         while self._dma_timings:
-            begin, end = self._dma_timings.popleft()
-            self.LoadTimeOneExpert.append(begin.elapsed_time(end) / 1000.0)
+            begin, end, token_idx = self._dma_timings.popleft()
+            elapsed_ms = begin.elapsed_time(end)
+            if decode_metrics.enabled and token_idx > 0:
+                decode_metrics.pcie_ms.append(elapsed_ms)
+            self.LoadTimeOneExpert.append(elapsed_ms / 1000.0)
             self.measured_dma_copies += 1
         self.LoadTimeOneExpert = self.LoadTimeOneExpert[-10:]
 
@@ -780,6 +786,17 @@ def cache_router(scores:list,cache:ExpertCache,a:float,topk:int,replaceset:list,
 
     return cacherouter_experts,top_uid
 def remove_outliers_and_average(raw):
+    if os.environ.get('SMOE_FAST_COST_AVERAGE', '0') == '1':
+        # Rolling histories contain at most ten scalar samples. Avoid multiple
+        # NumPy conversions/reductions per layer; keep the population-std rule.
+        if not raw:
+            raise ValueError('list can not be empty')
+        mean = sum(raw) / len(raw)
+        if len(raw) <= 2:
+            return mean
+        std = (sum((x - mean) ** 2 for x in raw) / len(raw)) ** .5
+        kept = [x for x in raw if abs(x - mean) <= std]
+        return sum(kept) / len(kept) if kept else mean
     numbers = raw[:]
     if len(numbers) == 0:
         raise ValueError("list can not be empty")

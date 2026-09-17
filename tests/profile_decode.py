@@ -24,7 +24,7 @@ def build_profiled_model(*args, **kwargs):
             state['profiler'] = torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU,
                             torch.profiler.ProfilerActivity.CUDA],
-                record_shapes=True)
+                record_shapes=True, with_stack=True)
             state['profiler'].__enter__()
 
     def after(module, inputs, output):

@@ -16,6 +16,8 @@ class FusedGateUpMixin:
         self._gpu_fuse_gate_up = os.environ.get(
             "SMOE_GPU_BF16_FUSED_GATE_UP", "1"
         ).strip().lower() not in {"0", "false", "off", "no"}
+        self._cpu_bf16_mv = os.environ.get('SMOE_CPU_BF16_MV', '0') == '1'
+        self._gpu_triton_expert = os.environ.get('SMOE_GPU_TRITON_EXPERT', '0') == '1'
 
     def configure_cpu_bf16_gate_up(self, weight: torch.Tensor) -> bool:
         return self._configure_fused_gate_up(weight, "cpu", self._cpu_fuse_gate_up)
@@ -50,5 +52,12 @@ class FusedGateUpMixin:
                   else None)
         if weight is None:
             return None
+        if x.device.type == 'cpu' and self._cpu_bf16_mv:
+            gate, up = torch.mv(weight, x.reshape(-1)).split(self.intermediate_size)
+            return torch.mv(self.down_proj.weight, self.act_fn(gate) * up).reshape(x.shape)
+        if (x.is_cuda and self._gpu_triton_expert and self.config.hidden_act == 'silu'
+                and x.is_contiguous() and x.dtype == torch.bfloat16):
+            from utils.triton_bf16_expert import bf16_expert
+            return bf16_expert(x, weight, self.down_proj.weight)
         gate, up = F.linear(x, weight).split(self.intermediate_size, dim=-1)
         return self.down_proj(self.act_fn(gate) * up)

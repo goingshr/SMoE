@@ -15,6 +15,7 @@ Xverse-specific parts:
 """
 
 import logging
+import os
 
 import torch
 import torch.nn.functional as F
@@ -86,6 +87,11 @@ class XverseMoEMLPwithCache(AbstractMoELayer):
 
         self.router         = gate
         self.shared_experts = shared_experts
+        self._shared_graph = None
+        self._validate_shared = os.environ.get('SMOE_VALIDATE_GROUPED', '0') == '1'
+        if shared_experts is not None and os.environ.get('SMOE_XVERSE_SHARED_GRAPH', '0') == '1':
+            from MoEModule.decode_graph import DecodeExpertGraph
+            self._shared_graph = DecodeExpertGraph(shared_experts, config.hidden_size, config.device)
 
         # Next-layer modules for prefetch prediction
         self.next_attention                = next_attention
@@ -114,6 +120,14 @@ class XverseMoEMLPwithCache(AbstractMoELayer):
         # hidden_states is [T, H] (already flattened in run_with_cache).
         if self.num_shared_experts is not None and self.shared_experts is not None:
             T, H = hidden_states.shape
+            if self._shared_graph is not None and T == 1:
+                result = self._shared_graph(hidden_states).view(T, H)
+                if self._validate_shared:
+                    reference = self.shared_experts(hidden_states.view(1, T, H)).view(T, H)
+                    torch.testing.assert_close(result, reference, rtol=0, atol=0)
+                    logger.info('[Shared graph validation] layer=%d exact', self.layerid)
+                    self._validate_shared = False
+                return result
             return self.shared_experts(hidden_states.view(1, T, H)).view(T, H)
         return torch.zeros_like(hidden_states)
 

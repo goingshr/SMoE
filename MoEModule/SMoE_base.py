@@ -33,6 +33,7 @@ from utils.expertcache import (
     replaceset_between_tokens,
 )
 import utils.expertcache as expertcache_module
+from utils import decode_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ class _PersistentBgThread:
     def __init__(self):
         self._work_fn   = None
         self._work_args = None
+        self._error = None
         self._ready     = threading.Event()
         self._done      = threading.Event()
         self._done.set()   # starts "done" (no work pending)
@@ -89,12 +91,14 @@ class _PersistentBgThread:
             try:
                 self._work_fn(*self._work_args)
             except Exception as e:
+                self._error = e
                 logger.error("BgThread error: %s", e, exc_info=True)
             finally:
                 self._done.set()
 
     def submit(self, fn, args=()):
         """Submit work; caller must call wait() before reading results."""
+        self._error = None
         self._done.clear()
         self._work_fn   = fn
         self._work_args = args
@@ -103,6 +107,8 @@ class _PersistentBgThread:
     def wait(self):
         """Block until submitted work is complete."""
         self._done.wait()
+        if self._error is not None:
+            raise RuntimeError('MoE background work failed') from self._error
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +168,17 @@ class AbstractMoELayer(nn.Module, ABC):
 
         # Rolling window for CPU-compute time estimator
         self.CPUComputeTimeOneExpertOneBatch = [0.05]
+        self._decode_minmax = os.environ.get('SMOE_DECODE_MINMAX', '0') == '1'
+        self._decode_cpu_only = os.environ.get('SMOE_DECODE_CPU_ONLY', '0') == '1'
+        self._gpu_inline_submit = os.environ.get('SMOE_GPU_INLINE_SUBMIT', '0') == '1'
+        self._grouped_decode = None
+        self._validate_grouped = os.environ.get('SMOE_VALIDATE_GROUPED', '0') == '1'
+        if (os.environ.get('SMOE_GPU_GROUPED_TRITON', '0') == '1'
+                and getattr(config, 'model_type', '') == 'xverse'
+                and config.hidden_act == 'silu' and config.pretraining_tp == 1):
+            from utils.grouped_decode import GroupedDecode
+            self._grouped_decode = GroupedDecode(config.hidden_size,
+                config.intermediate_size, config.moe_top_k, config.device)
 
         # Persistent background thread (one per MoE layer, reused across tokens)
         self._bg_worker = _PersistentBgThread()
@@ -301,6 +318,7 @@ class AbstractMoELayer(nn.Module, ABC):
 
         if self.get_norm_topk_prob():
             topk_weight = topk_weight / topk_weight.sum(dim=-1, keepdim=True)
+        self._current_topk_weight = topk_weight
 
         final_hidden_states = torch.zeros(
             (num_tokens, hidden_dim),
@@ -383,11 +401,38 @@ class AbstractMoELayer(nn.Module, ABC):
         """
         self.next_experts = None
 
-        for uid in hit_uids:
+        timing = decode_metrics.gpu_begin() if expertcache_module.tokens > 0 and hit_uids else None
+        grouped = (self._grouped_decode is not None and bsh[0] * bsh[1] == 1
+                   and bool(hit_uids) and self._decode_direct
+                   and identity.dtype == torch.bfloat16
+                   and self._current_topk_weight.dtype == self._grouped_decode.weights.dtype)
+        if grouped:
+            experts = [self.ExpertCache.get_compute_expert(uid) for uid in hit_uids]
+            base = self._current_topk_weight.storage_offset()
+            slots = [expert_token_dic[uid][1].storage_offset() - base for uid in hit_uids]
+            out = self._grouped_decode(identity, self._current_topk_weight,
+                [expert.storage.data_ptr() for expert in experts], slots)
+            if self._validate_grouped:
+                for row, (uid, expert) in enumerate(zip(hit_uids, experts)):
+                    reference = expert(expert_token_dic[uid][0])
+                    reference.mul_(expert_token_dic[uid][1])
+                    actual = out[row:row+1]
+                    delta = actual.float() - reference.float()
+                    relative_rms = (delta.square().mean() /
+                        reference.float().square().mean().clamp_min(1e-20)).sqrt().item()
+                    if not torch.isfinite(actual).all() or relative_rms >= .01:
+                        raise AssertionError(f'Grouped expert {uid} relative RMS={relative_rms}')
+                    logger.info('[Grouped validation] uid=%s max_abs=%.8g relative_rms=%.8g',
+                                uid, delta.abs().max().item(), relative_rms)
+                self._validate_grouped = False
+            for row, uid in enumerate(hit_uids):
+                expert_out_dict[uid] = out[row:row+1]
+        for uid in ([] if grouped else hit_uids):
             expert = self.ExpertCache.get_compute_expert(uid)
             out    = expert(expert_token_dic[uid][0])
             out.mul_(expert_token_dic[uid][1])
             expert_out_dict[uid] = out
+        decode_metrics.gpu_end(timing, len(hit_uids))
 
         if self.if_prefetch and self.layerid < 27 and miss_count > 0:
             self.next_experts = self.predict_next_layer_experts(
@@ -438,18 +483,32 @@ class AbstractMoELayer(nn.Module, ABC):
 
         if self.if_usecpu:
             pcie_uids, cpu_uids = CPU_load_management(uid_batch, cpu_avg, load_avg)
+            if cur_tok > 0 and bsh[0] * bsh[1] == 1:
+                if self._decode_cpu_only:
+                    pcie_uids, cpu_uids = [], list(uid_batch)
+                elif self._decode_minmax:
+                    uids = list(uid_batch)
+                    n = len(uids)
+                    cpu_count = min(range(n + 1), key=lambda c: (
+                        max(c * cpu_avg, (n - c) * load_avg), n - c))
+                    pcie_uids, cpu_uids = uids[cpu_count:], uids[:cpu_count]
         else:
             pcie_uids = list(uid_batch.keys())
             cpu_uids  = []
 
+        if decode_metrics.enabled and cur_tok > 0:
+            decode_metrics.counts.update(hits=len(hit_uids), misses=len(uid_batch),
+                                        miss_to_gpu=len(pcie_uids), miss_to_cpu=len(cpu_uids))
         expert_out_dict = {}
 
         # ── B6: submit bg-thread work + enqueue PCIe loads (parallel) ───
-        self._bg_worker.submit(
-            self._work_cachehit_and_predict,
-            args=(hit_uids, expert_token_dic, expert_out_dict,
-                  len(uid_batch), residual_cur, identity,
-                  bsh, shared_expert_output))
+        inline = self._gpu_inline_submit and bsh[0] * bsh[1] == 1 and not self.if_prefetch
+        work_args = (hit_uids, expert_token_dic, expert_out_dict,
+                     len(uid_batch), residual_cur, identity, bsh, shared_expert_output)
+        if inline:
+            self._work_cachehit_and_predict(*work_args)
+        else:
+            self._bg_worker.submit(self._work_cachehit_and_predict, args=work_args)
         for uid in pcie_uids:
             self.ExpertCache.add_to_queue(uid)
 
@@ -472,14 +531,17 @@ class AbstractMoELayer(nn.Module, ABC):
                 self.ExpertCache.LoadTimeOneExpert = lst[-10:]
 
         # ── B9: wait for background thread ───────────────────────────────
-        self._bg_worker.wait()
+        if not inline:
+            self._bg_worker.wait()
 
         # ── B11: compute PCIe-loaded miss experts on GPU ─────────────────
+        timing = decode_metrics.gpu_begin() if cur_tok > 0 and pcie_uids else None
         for uid in pcie_uids:
             expert = self.ExpertCache.get_compute_expert(uid)
             out    = expert(expert_token_dic[uid][0])
             out.mul_(expert_token_dic[uid][1])
             expert_out_dict[uid] = out
+        decode_metrics.gpu_end(timing, len(pcie_uids), 'miss')
 
         # ── B12: sync GPU + scatter all expert outputs ───────────────────
         # With prefetch disabled, the current load queue has been drained and
@@ -574,9 +636,9 @@ class AbstractMoELayer(nn.Module, ABC):
                 cpu_inputs[token_key] = tokens_cpu
                 self._record_cpu_transfer(tokens_cpu, d2h=True)
 
-            t_compute_0 = time.time()
+            t_compute_0 = time.perf_counter()
             out_cpu = expert(tokens_cpu)
-            compute_ms = (time.time() - t_compute_0) * 1000
+            compute_ms = (time.perf_counter() - t_compute_0) * 1000
             cpu_results.append((uid, out_cpu, compute_ms))
             self._record_cpu_compute(compute_ms)
 
@@ -606,6 +668,8 @@ class AbstractMoELayer(nn.Module, ABC):
             row_offset += rows
 
     def _record_cpu_compute(self, compute_ms):
+        if decode_metrics.enabled and expertcache_module.tokens > 0:
+            decode_metrics.cpu_ms.append(compute_ms)
         elapsed = compute_ms / 1000.0
         self.CPUComputeTimeOneExpertOneBatch.append(elapsed)
         self.CPUComputeTimeOneExpertOneBatch = \
@@ -633,9 +697,9 @@ class AbstractMoELayer(nn.Module, ABC):
 
             tokens_cpu  = expert_token_dic[uid][0].to("cpu")
             self._record_cpu_transfer(tokens_cpu, d2h=True)
-            t_compute_0 = time.time()
+            t_compute_0 = time.perf_counter()
             out_cpu     = expert(tokens_cpu)
-            compute_ms  = (time.time() - t_compute_0) * 1000
+            compute_ms  = (time.perf_counter() - t_compute_0) * 1000
             out         = out_cpu.to(self.config.device)
             self._record_cpu_transfer(out_cpu, d2h=False)
 

@@ -281,6 +281,12 @@ def load_00_expert_state_dict(states_dir: str, model_type: str, device: torch.de
 
 
 class ExpertWrapper(nn.Module):
+    # Five Xverse packs fit in a 128 MiB pinned allocator block. Individually,
+    # every 25.3125 MiB pack rounds to 32 MiB (56 GiB for 1792 experts).
+    # Sharing the allocation reduces pinned host residency to about 45 GiB.
+    _host_pack_arena = None
+    _host_pack_cursor = 0
+
     def __init__(
             self,
             expert_module: DeepseekMLP,
@@ -367,11 +373,24 @@ class ExpertWrapper(nn.Module):
             # Every GPU slot has CPU backing for later eviction. DeepSeek's
             # full expert set needs pageable memory to use host RAM + swap;
             # keep pinned transfers for the smaller Qwen/Xverse workloads.
-            cpu_tensor = torch.empty(
-                storage_size, dtype=torch.uint8, device="cpu",
-                pin_memory=self.model_type != "deepseekmoe",
-            )
-            storage = cpu_tensor.untyped_storage()
+            if (self.model_type == 'xversemoe'
+                    and os.environ.get('SMOE_COMPACT_PINNED', '1') == '1'):
+                cls = ExpertWrapper
+                arena = cls._host_pack_arena
+                offset = cls._host_pack_cursor
+                if arena is None or offset + storage_size > arena.numel():
+                    arena = torch.empty(5 * storage_size, dtype=torch.uint8,
+                                        device='cpu', pin_memory=True)
+                    cls._host_pack_arena = arena
+                    offset = 0
+                storage = arena.untyped_storage()[offset:offset + storage_size]
+                cls._host_pack_cursor = offset + storage_size
+            else:
+                cpu_tensor = torch.empty(
+                    storage_size, dtype=torch.uint8, device="cpu",
+                    pin_memory=self.model_type != "deepseekmoe",
+                )
+                storage = cpu_tensor.untyped_storage()
         else:
             storage = torch.UntypedStorage(storage_size, device=device)
         # logger.debug(f"Current CPU memory usage1: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
@@ -808,9 +827,20 @@ def build_model(
     # Inject prefill/decode timing + per-token expert hit-rate stats for all models.
     # For deepseekmoe this is already done inside patch_deepseek_model (via
     # _patch_inner_model_forward); for qwenmoe and xversemoe we apply it here.
+    if model_type == 'xversemoe' and os.environ.get('SMOE_COMPACT_CAUSAL_MASK', '0') == '1':
+        from utils.xverse_causal_mask import install
+        install(model)
     if model_type in ("qwenmoe", "xversemoe"):
         from utils.patcher import patch_model_forward
         patch_model_forward(model, model_type)
         logger.info("SMoE inner-model forward patched for %s.", model_type)
 
+    if model_type == 'xversemoe' and os.environ.get('SMOE_TRITON_DECODE_NORM', '0') == '1':
+        from utils import decode_norm
+        decode_norm.enabled = True
+        decode_norm.install(model)
+    if model_type == 'xversemoe' and os.environ.get('SMOE_TRITON_DECODE_ROPE', '0') == '1':
+        from utils import decode_rope
+        decode_rope.enabled = True
+        decode_rope.install(model)
     return model
