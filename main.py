@@ -17,6 +17,8 @@ parser.add_argument("--model_name",    type=str, default='qwenmoe')
 parser.add_argument("--model_path",    type=str, default='')
 parser.add_argument("--config_path",   type=str, default='')
 parser.add_argument("--input_num",     type=int, default=20)
+parser.add_argument("--input_len",     type=int, default=None)
+parser.add_argument("--warmup_num",    type=int, default=0)
 parser.add_argument("--dataset_path",  type=str, default='wic')
 parser.add_argument("--batch_size",    type=int, default=1)
 parser.add_argument("--debug",         type=bool, default=False)
@@ -25,6 +27,13 @@ parser.add_argument("--GPU_mem",       type=float, default=10)
 parser.add_argument("--cpu_cores",     type=int, default=16)
 
 args = parser.parse_args()
+
+if args.input_num < 1:
+    parser.error("--input_num must be at least 1")
+if args.input_len is not None and args.input_len < 1:
+    parser.error("--input_len must be at least 1")
+if args.warmup_num < 0:
+    parser.error("--warmup_num cannot be negative")
 
 import os as _os
 
@@ -158,7 +167,8 @@ else:
 from utils.load_dataset import load_all
 
 dataset_path = args.dataset_path
-all_inputs   = load_all(dataset_path, args.batch_size, args.input_num)
+all_inputs = load_all(
+    dataset_path, args.batch_size, args.input_num + args.warmup_num)
 
 # ── Model initialization ─────────────────────────────────────────────────────
 
@@ -184,7 +194,9 @@ try:
     _smoe_cfg = {k: _cfg_dict[k] for k in _smoe_keys if k in _cfg_dict}
     print(f"[CONFIG] model_name={args.model_name}  model_path={model_name}")
     print(f"[CONFIG] config_path={_config_file}")
-    print(f"[CONFIG] cache_size=auto(gpu_mem={args.GPU_mem}GB)  output_len={args.output_len}  input_num={args.input_num}")
+    print(f"[CONFIG] cache_size=auto(gpu_mem={args.GPU_mem}GB)  "
+          f"input_len={args.input_len}  output_len={args.output_len}  "
+          f"input_num={args.input_num}  warmup_num={args.warmup_num}")
     print(f"[CONFIG] SMoE fields: {_smoe_cfg}")
 except Exception as _e:
     print(f"[CONFIG] Failed to read config: {_e}")
@@ -198,13 +210,18 @@ output_len = args.output_len
 import utils.expertcache as expertcache
 import MoEModule.SMoE_base as _smoe_base
 
+_measured_records = []
 for i, _ in enumerate(all_inputs):
+    _phase = "warmup" if i < args.warmup_num else "measure"
+    _sample_id = i if _phase == "warmup" else i - args.warmup_num
     # Reset per-prompt statistics (patcher reads these each token)
     expertcache.tokens       = 0
     expertcache.decode_time  = 0.0
     expertcache.prefill_time = 0.0
     expertcache.cache_hits_per_token  = 0
     expertcache.cache_total_per_token = 0
+    expertcache.cache_hits_prompt  = 0
+    expertcache.cache_total_prompt = 0
     expertcache.prefetch_loaded_by_layer = {}
     expertcache.prefetch_start_time      = {}
     _smoe_base.cpu_compute_ms_per_token.clear()
@@ -217,12 +234,27 @@ for i, _ in enumerate(all_inputs):
     _smoe_base.cpu_output_h2d_bytes = 0
     texts  = all_inputs[i]
     print('=' * 20, flush=True)
+    print(f"[RUN] phase={_phase} sample_id={_sample_id} dataset_index={i}", flush=True)
     print(f"input_id: {i}")
     print(f'text: {texts}', flush=True)
 
-    inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
+    _tokenizer_kwargs = {
+        "return_tensors": "pt",
+        "padding": True,
+        "truncation": args.input_len is not None,
+    }
+    if args.input_len is not None:
+        _tokenizer_kwargs["max_length"] = args.input_len
+    inputs = tokenizer(texts, **_tokenizer_kwargs)
+    _actual_input_len = int(inputs["input_ids"].shape[-1])
+    logger.info(
+        "[INPUT] phase=%s sample_id=%d input_tokens=%d requested_max=%s",
+        _phase, _sample_id, _actual_input_len, args.input_len,
+    )
     inputs = {k: v.to(device) for k, v in inputs.items() if k != "token_type_ids"}
 
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device)
     with torch.no_grad():
         start   = time.time()
         outputs = model.generate(**inputs, max_new_tokens=output_len)
@@ -264,6 +296,13 @@ for i, _ in enumerate(all_inputs):
                 "total=%.4f s  decode_tokens=%d",
                 i, expertcache.prefill_time, avg_decode_time,
                 end - start, decode_tokens)
+    _gpu_hit_rate = (expertcache.cache_hits_prompt / expertcache.cache_total_prompt
+                     if expertcache.cache_total_prompt > 0 else float('nan'))
+    logger.info(
+        "[GPU cache] prompt=%d decode_hit_rate=%.6f hits=%d total=%d",
+        i, _gpu_hit_rate, expertcache.cache_hits_prompt,
+        expertcache.cache_total_prompt,
+    )
     logger.info(
         "[CPU transfer] prompt=%d activation_d2h=%d/%dB output_h2d=%d/%dB",
         i,
@@ -274,22 +313,45 @@ for i, _ in enumerate(all_inputs):
     )
 
     results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-    if model_type == "qwenmoe":
+    if model_type in ("qwenmoe", "xversemoe"):
         _cache = model.model.layers[0].mlp.ExpertCache
         _replayed_slots = sum(
             m.decode_graph is not None and m.decode_graph.engaged
             for m in _cache.main_modules)
         _replayed_shared = sum(
-            layer.mlp._shared_graph is not None and layer.mlp._shared_graph.engaged
+            getattr(layer.mlp, "_shared_graph", None) is not None
+            and layer.mlp._shared_graph.engaged
             for layer in model.model.layers)
         logger.info(
-            "[GPU decode] prompt=%d replayed_slots=%d shared_layers=%d "
+            "[GPU decode] prompt=%d cache_slots=%d replayed_slots=%d shared_layers=%d "
             "peak_allocated=%d peak_reserved=%d",
-            i, _replayed_slots, _replayed_shared,
+            i, len(_cache.main_modules), _replayed_slots, _replayed_shared,
             torch.cuda.max_memory_allocated(), torch.cuda.max_memory_reserved())
         if _cache.measure_dma:
             logger.info("[DMA timing] completed_copies=%d estimate_ms=%.4f",
                         _cache.measured_dma_copies,
                         1000 * sum(_cache.LoadTimeOneExpert) / len(_cache.LoadTimeOneExpert))
+    if _phase == "measure":
+        _measured_records.append({
+            "decode": avg_decode_time,
+            "cpu_forward": float(numpy.mean(_cpu_decode_ms)) if _cpu_decode_ms else float('nan'),
+            "gpu_hit_rate": _gpu_hit_rate,
+            "prefill": expertcache.prefill_time,
+            "total": end - start,
+            "decode_tokens": decode_tokens,
+            "input_tokens": _actual_input_len,
+        })
     logger.warning("results: %s", results)
     print('=' * 20, flush=True)
+
+if _measured_records:
+    def _mean(key):
+        return float(numpy.nanmean([record[key] for record in _measured_records]))
+
+    logger.warning(
+        "[SUMMARY] measured_prompts=%d mean_decode=%.6f s/token "
+        "mean_cpu_expert_forward=%.3f ms mean_gpu_hit_rate=%.6f "
+        "mean_prefill=%.4f s mean_total=%.4f s",
+        len(_measured_records), _mean("decode"), _mean("cpu_forward"),
+        _mean("gpu_hit_rate"), _mean("prefill"), _mean("total"),
+    )

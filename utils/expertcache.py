@@ -51,6 +51,10 @@ prefill_time = 0.0  # prefill wall time (seconds)
 cache_hits_per_token  = 0
 cache_total_per_token = 0
 
+# Decode-only prompt totals. Prefill is explicitly discarded by patcher.py.
+cache_hits_prompt  = 0
+cache_total_prompt = 0
+
 # per-layer prefetch loaded set: layer_id -> set of expert_ids queued for prefetch
 prefetch_loaded_by_layer: dict = {}   # {layer_id: set of expert_ids}
 prefetch_start_time: dict = {}        # {layer_id: timestamp when prefetch add_to_queue ran}
@@ -330,6 +334,76 @@ class ExpertCache:
         assert self.module_type is not None
         assert isinstance(module, self.module_type)
         return self.add_expert_storage(uid, module.storage, offload=offload)
+
+    def reserve_expert(self, uid: ExpertUID, offload: bool):
+        """Register an expert without copying its weights yet.
+
+        Original Hugging Face checkpoints can place experts from every layer in
+        the same large shard.  Reserving all slots first lets the loader visit
+        each shard once while preserving the normal layer-major cache layout.
+        ``load_reserved_expert`` must be called for every reserved UID before
+        inference starts.
+        """
+        assert uid not in self.registered_experts, f"expert {uid} already registered"
+
+        info = None
+        if not offload:
+            try:
+                main_index = self.main_infos.index(0)
+            except ValueError as exc:
+                raise ValueError("GPU expert cache is full") from exc
+            info = ExpertInfo(
+                uid, False, 0, False,
+                scores=FixedSizeQueueForScore(self.cache_window),
+                index=main_index,
+                offload_index=0,
+            )
+            self.registered_experts[uid] = info
+            self.cache_infos.add(info)
+            self.main_infos[main_index] = 1
+
+        try:
+            offload_index = self.offloaded_infos.index(0)
+        except ValueError as exc:
+            raise ValueError("CPU expert cache is full") from exc
+
+        if offload:
+            info = ExpertInfo(
+                uid, True, 0, False,
+                scores=FixedSizeQueueForScore(self.cache_window),
+                index=offload_index,
+                offload_index=offload_index,
+            )
+            self.registered_experts[uid] = info
+            self.cache_infos.add(info)
+        else:
+            info.offload_index = offload_index
+        self.offloaded_infos[offload_index] = 1
+
+    @staticmethod
+    def _copy_state_to_storage(storage: torch.UntypedStorage, state_dict: dict):
+        """Pack gate/up/down tensors into an ExpertWrapper backing storage."""
+        offset = 0
+        for name in ("gate_proj.weight", "up_proj.weight", "down_proj.weight"):
+            source = state_dict[name]
+            end = offset + source.nbytes
+            target = torch.as_tensor(
+                storage[offset:end], dtype=source.dtype, device=storage.device
+            ).view(source.shape)
+            target.copy_(source)
+            offset = end
+        if offset != storage.nbytes():
+            raise ValueError(
+                f"Expert state occupies {offset} bytes, storage has {storage.nbytes()} bytes"
+            )
+
+    def load_reserved_expert(self, uid: ExpertUID, state_dict: dict):
+        """Fill the CPU backing and, when resident, its initial GPU cache slot."""
+        info = self.registered_experts[uid]
+        cpu_storage = self.offloaded_storages[info.offload_index].storage
+        self._copy_state_to_storage(cpu_storage, state_dict)
+        if not info.offloaded:
+            self.main_modules[info.index].storage.copy_(cpu_storage)
 
     def add_expert_storage(self, uid: ExpertUID, storage: torch.UntypedStorage, offload: Optional[bool] = None):
         assert uid not in self.registered_experts, f"expert {uid} already registered"

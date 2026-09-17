@@ -8,6 +8,8 @@ MODEL_PATH="${MODEL_PATH:-}"                   # Model weights directory (empty 
 CONFIG_PATH="${CONFIG_PATH:-}"                 # SMoE config.json path (empty = use default in model dir)
 DATASET_PATH="${DATASET_PATH:-gaokao_math_ii}"    # Dataset name or path
 INPUT_NUM="${INPUT_NUM:-20}"                   # Number of inference samples
+INPUT_LEN="${INPUT_LEN:-}"                     # Optional tokenizer max input length
+WARMUP_NUM="${WARMUP_NUM:-0}"                  # Prompts excluded from measured summary
 BATCH_SIZE="${BATCH_SIZE:-1}"                  # Batch size
 OUTPUT_LEN="${OUTPUT_LEN:-100}"                # Max new tokens per prompt
 GPU_MEM="${GPU_MEM:-10}"                       # RTX 3060 12 GB: leave room for prompts
@@ -49,6 +51,13 @@ CMD=(python main.py
     --cpu_cores   "${CPU_CORES}"
     --dataset_path "${DATASET_PATH}"
 )
+
+if [[ -n "${INPUT_LEN}" ]]; then
+    CMD+=(--input_len "${INPUT_LEN}")
+fi
+if [[ "${WARMUP_NUM}" != "0" ]]; then
+    CMD+=(--warmup_num "${WARMUP_NUM}")
+fi
 
 if [[ -n "${MODEL_PATH}" ]]; then
     CMD+=(--model_path "${MODEL_PATH}")

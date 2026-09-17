@@ -15,7 +15,7 @@ from configs.configuration_xverse import XverseConfig
 from safetensors.torch import load_file
 
 from torch import nn
-from tqdm.auto import trange
+from tqdm.auto import tqdm, trange
 from contextlib import contextmanager
 # Qwen2MoE is in the official transformers library — import directly.
 from models.modeling_qwen import Qwen2MoeForCausalLM
@@ -162,6 +162,57 @@ def _extract_expert_dict(shard: dict, layer_idx: int, expert_idx: int) -> dict:
     """Strip the full-path prefix from one expert's weights inside an original HF shard."""
     prefix = f"model.layers.{layer_idx}.mlp.experts.{expert_idx}."
     return {k[len(prefix):]: v for k, v in shard.items() if k.startswith(prefix)}
+
+
+def _load_original_experts_shardwise(
+    expert_cache: ExpertCache,
+    states_dir: str,
+    weight_map: dict,
+    expert_uids: list[tuple[int, int]],
+    main_size: int,
+):
+    """Load an original HF checkpoint with one read per expert shard.
+
+    Xverse shards are expert-major: every shard contains groups from all 28
+    layers.  The old layer-major loop consequently re-read each ~6 GB shard
+    once per layer.  Reserve in layer-major order to retain the exact initial
+    GPU cache assignment, then populate those slots shard-by-shard.
+    """
+    for index, uid in enumerate(expert_uids):
+        expert_cache.reserve_expert(uid, offload=index >= main_size)
+
+    shard_to_uids: dict[str, list[tuple[int, int]]] = {}
+    for uid in expert_uids:
+        layer_idx, expert_idx = uid
+        prefix = f"model.layers.{layer_idx}.mlp.experts.{expert_idx}."
+        shard_files = {path for key, path in weight_map.items() if key.startswith(prefix)}
+        if len(shard_files) != 1:
+            raise ValueError(
+                f"Expected one shard for expert {uid}, found {sorted(shard_files)}"
+            )
+        shard_to_uids.setdefault(shard_files.pop(), []).append(uid)
+
+    loaded = 0
+    for shard_fpath, uids in tqdm(
+        shard_to_uids.items(), desc="Loading expert shards"
+    ):
+        shard = _load_shard(os.path.join(states_dir, shard_fpath), device="cpu")
+        for layer_idx, expert_idx in uids:
+            state_dict = _extract_expert_dict(shard, layer_idx, expert_idx)
+            expected = {"gate_proj.weight", "up_proj.weight", "down_proj.weight"}
+            if set(state_dict) != expected:
+                raise KeyError(
+                    f"Incomplete expert {(layer_idx, expert_idx)} in {shard_fpath}: "
+                    f"found {sorted(state_dict)}"
+                )
+            expert_cache.load_reserved_expert((layer_idx, expert_idx), state_dict)
+            loaded += 1
+        del shard
+        gc.collect()
+        torch.cuda.synchronize()
+
+    if loaded != len(expert_uids):
+        raise RuntimeError(f"Loaded {loaded} experts, expected {len(expert_uids)}")
 
 
 def make_and_load_expert_wrapper(
@@ -676,6 +727,11 @@ def build_model(
 
     if model_type == "xversemoe":
         init_size=0
+        xverse_expert_uids = [
+            (layer_idx, expert_idx)
+            for layer_idx in range(model_config.num_hidden_layers)
+            for expert_idx in range(model_config.num_experts)
+        ]
         for layer_idx in trange(0,model_config.num_hidden_layers, desc="Loading experts"):
             curr_layer = model.model.layers[layer_idx]
             if layer_idx <27:
@@ -705,6 +761,8 @@ def build_model(
                     curr_layer.mlp.shared_experts,
                     None,None,None,None
                 )
+            if original_hf:
+                continue
             for expert_idx in range(model_config.num_experts):
                 # logger.debug("---------")
                 # logger.debug(f"Current CPU memory usage: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
@@ -727,6 +785,14 @@ def build_model(
                 )
                 del expert_wrapper
                 init_size+=1
+        if original_hf:
+            _load_original_experts_shardwise(
+                expert_cache,
+                model_path,
+                weight_map,
+                xverse_expert_uids,
+                main_size,
+            )
             gc.collect()
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()

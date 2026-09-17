@@ -215,6 +215,10 @@ def _patch_inner_model_forward(inner_model, use_smoe_cache: bool = False):
             ec.prefill_time = prefill_elapsed
             ec.tokens      += 1
             logger.info("[SMoE] prefill_time=%.4f s", prefill_elapsed)
+            # MoE layers update the same counters during prefill.  They must
+            # not leak into token=1 or prompt-level decode hit-rate metrics.
+            ec.cache_hits_per_token = 0
+            ec.cache_total_per_token = 0
         else:
             # ── Decode token ─────────────────────────────────────────────
             token_elapsed  = e - s
@@ -226,6 +230,8 @@ def _patch_inner_model_forward(inner_model, use_smoe_cache: bool = False):
             hits     = ec.cache_hits_per_token
             total    = ec.cache_total_per_token
             hit_rate = hits / total if total > 0 else float('nan')
+            ec.cache_hits_prompt += hits
+            ec.cache_total_prompt += total
 
             logger.info(
                 "[SMoE] token=%d  decode=%.4f s  avg_decode=%.4f s  "
